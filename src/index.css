@@ -1,0 +1,216 @@
+@import url('https://fonts.googleapis.com/css2?family=Urbanist:wght@300;400;500;600;700;800;900&display=swap');
+
+:root {
+  font-family: 'Urbanist', 'Helvetica', 'Arial', sans-serif;
+  line-height: 1.5;
+  font-weight: 600;
+
+  /* Color Variables */
+  --primary-purple: #6818A5;
+  --primary-light-bg: #F7F4FD;
+  --background-color: #F6F9FF;
+  --notification-yellow: #FACC15;
+  --error-red: #EA4335;
+  --text-black: #0F172A;
+  --text-secondary: #1E293B;
+  --text-placeholder: #475569;
+  --text-unfilled: #64748B;
+  --white: #FFFFFF;
+
+  color-scheme: light;
+  color: var(--text-black);
+  background-color: var(--background-color);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  font-weight: 700;
+  color: var(--primary-purple);
+  text-decoration: inherit;
+  font-family: 'Urbanist', sans-serif;
+}
+a:hover {
+  color: var(--primary-purple);
+  text-decoration: underline;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  font-family: 'Urbanist', sans-serif;
+  background-color: var(--background-color);
+}
+
+h1 {
+  font-size: 3.2em;
+  line-height: 1.1;
+  font-family: 'Urbanist', sans-serif;
+  font-weight: 800;
+  color: var(--text-black);
+}
+
+h2, h3, h4, h5, h6 {
+  font-family: 'Urbanist', sans-serif;
+  font-weight: 700;
+  color: var(--text-black);
+}
+
+/* Global text styling */
+p, span, div {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* Ensure all text is darker and bolder */
+body, html {
+  color: var(--text-secondary);
+}
+
+/* Make labels darker */
+label {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* Make placeholders darker */
+input::placeholder, textarea::placeholder, select::placeholder {
+  color: var(--text-placeholder);
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+/* Make inputs darker */
+input, textarea, select {
+  color: var(--text-black);
+  font-weight: 600;
+}
+
+button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 12px 24px;
+  font-size: 1em;
+  font-weight: 700;
+  font-family: 'Urbanist', sans-serif;
+  background-color: var(--primary-purple);
+  color: var(--white);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+button:hover {
+  background-color: #5a1594;
+  transform: translateY(-1px);
+}
+button:focus,
+button:focus-visible {
+  outline: 2px solid var(--primary-purple);
+  outline-offset: 2px;
+}
+
+/* Utility Classes */
+.btn-primary {
+  background-color: var(--primary-purple);
+  color: var(--white);
+  font-family: 'Urbanist', sans-serif;
+  font-weight: 700;
+  border-radius: 8px;
+  padding: 12px 24px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.btn-primary:hover {
+  background-color: #5a1594;
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background-color: transparent;
+  color: var(--primary-purple);
+  border: 2px solid var(--primary-purple);
+  font-family: 'Urbanist', sans-serif;
+  font-weight: 700;
+  border-radius: 8px;
+  padding: 10px 22px;
+  cursor: pointer;
+}
+
+.btn-danger {
+  background-color: var(--error-red);
+  color: var(--white);
+  font-family: 'Urbanist', sans-serif;
+  font-weight: 700;
+  border-radius: 8px;
+  padding: 12px 24px;
+  border: none;
+  cursor: pointer;
+}
+
+.form-input {
+  width: 100%;
+  padding: 12px 16px;
+  border: 2px solid #E5E5E5;
+  border-radius: 8px;
+  font-family: 'Urbanist', sans-serif;
+  font-size: 16px;
+  background-color: var(--white);
+  transition: border-color 0.3s ease;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--primary-purple);
+}
+
+.form-input {
+  font-weight: 600;
+  color: var(--text-black);
+}
+
+.form-input::placeholder {
+  color: var(--text-placeholder);
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.form-input.error {
+  border-color: var(--error-red);
+}
+
+.error-message {
+  color: var(--error-red);
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.success-message {
+  color: var(--notification-yellow);
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.card {
+  background-color: var(--white);
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: 20px;
+  margin-bottom: 16px;
+  transition: box-shadow 0.3s ease;
+}
+
+.card:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+.card-header {
+  background-color: var(--primary-light-bg);
+  padding: 16px 20px;
+  border-radius: 12px 12px 0 0;
+  margin: -20px -20px 20px -20px;
+}
