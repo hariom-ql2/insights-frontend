@@ -1,47 +1,7 @@
 
-import { Box, Typography, Container, Grid, Card, CardContent } from '@mui/material';
-import { Business, Analytics, Speed, Security, Support, TrendingUp } from '@mui/icons-material';
+import { Box, Typography, Container, Card, CardContent } from '@mui/material';
 
 const About = () => {
-  const features = [
-    {
-      icon: <Analytics sx={{ fontSize: 40, color: '#6818A5' }} />,
-      title: 'Advanced Analytics',
-      description: 'Comprehensive data analysis and insights to help you make informed decisions about hotel bookings and pricing trends.'
-    },
-    {
-      icon: <Speed sx={{ fontSize: 40, color: '#6818A5' }} />,
-      title: 'Real-time Search',
-      description: 'Get instant results with our lightning-fast search engine that scans thousands of hotels across multiple platforms.'
-    },
-    {
-      icon: <Security sx={{ fontSize: 40, color: '#6818A5' }} />,
-      title: 'Secure Platform',
-      description: 'Your data is protected with enterprise-grade security measures and privacy-first approach.'
-    },
-    {
-      icon: <Support sx={{ fontSize: 40, color: '#6818A5' }} />,
-      title: '24/7 Support',
-      description: 'Our dedicated support team is always ready to help you with any questions or technical issues.'
-    },
-    {
-      icon: <TrendingUp sx={{ fontSize: 40, color: '#6818A5' }} />,
-      title: 'Price Tracking',
-      description: 'Monitor price fluctuations and get alerts when your preferred hotels drop to your target price.'
-    },
-    {
-      icon: <Business sx={{ fontSize: 40, color: '#6818A5' }} />,
-      title: 'Business Solutions',
-      description: 'Tailored solutions for travel agencies, corporate booking, and hospitality businesses.'
-    }
-  ];
-
-  const stats = [
-    { number: '10M+', label: 'Hotels Analyzed' },
-    { number: '50K+', label: 'Happy Customers' },
-    { number: '99.9%', label: 'Uptime Guarantee' },
-    { number: '24/7', label: 'Customer Support' }
-  ];
 
   return (
     <Box sx={{ backgroundColor: '#F6F9FF', minHeight: '100vh' }}>
@@ -82,8 +42,7 @@ const About = () => {
         {/* Mission Section */}
         <Card sx={{ mb: 8, borderRadius: 3, boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)' }}>
           <CardContent sx={{ p: 6 }}>
-            <Grid container spacing={4} alignItems="center">
-              <Grid item xs={12} md={6}>
+            <Box>
                 <Typography variant="h3" sx={{ color: '#6818A5', mb: 3, fontWeight: 700 }}>
                   Our Mission
                 </Typography>
@@ -97,8 +56,7 @@ const About = () => {
                   We're committed to transparency, accuracy, and user empowerment, ensuring that 
                   every booking decision is informed by reliable data and intelligent analysis.
                 </Typography>
-              </Grid>
-            </Grid>
+            </Box>
           </CardContent>
         </Card>
 

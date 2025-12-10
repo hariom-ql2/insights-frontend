@@ -33,7 +33,6 @@ import {
   Dashboard as DashboardIcon,
   People as PeopleIcon,
   Search as SearchIcon,
-  Folder as CollectionsIcon,
   TrendingUp as TrendingUpIcon,
   Refresh as RefreshIcon,
   Edit as EditIcon,

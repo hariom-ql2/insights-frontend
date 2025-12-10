@@ -238,10 +238,11 @@ const Dashboard: React.FC = () => {
       };
 
       if (walletRes.success) {
-        subscription.balance = walletRes.balance || 0;
+        const walletData = walletRes.data || walletRes as any;
+        subscription.balance = walletData.balance || 0;
         
         // Get recent transactions (2-3 most recent)
-        const transactions = walletRes.transactions || [];
+        const transactions = walletData.transactions || [];
         subscription.recentTransactions = transactions
           .slice(0, 3)
           .map((t: any) => ({

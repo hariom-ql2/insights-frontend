@@ -24,8 +24,6 @@ import {
   ListItemText,
   LinearProgress,
   TextField,
-  FormControl,
-  Select,
   MenuItem,
   Pagination,
   Menu
@@ -41,7 +39,6 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { schedulesApi, apiService } from '../services/api';
 import TimeDisplay from '../components/TimeDisplay';
-import noResultsImage from '../../icons/no-results.png';
 import viewIcon from '../../icons/view.svg';
 import deleteIcon from '../../icons/delete.svg';
 
@@ -160,9 +157,11 @@ const MySchedules: React.FC = () => {
       if (schedule.collection_id) {
         const response = await apiService.get(`/collection/${schedule.collection_id}`, token);
         if (response.success) {
+          // The API returns { success: true, collection: {...} }
+          const collectionData = (response as any).collection || response.data;
           setScheduledSearchDetails({
             type: 'collection',
-            data: response
+            data: collectionData
           });
         }
       }
@@ -170,9 +169,11 @@ const MySchedules: React.FC = () => {
       else if (schedule.search_id) {
         const response = await apiService.get(`/search/${schedule.search_id}`, token);
         if (response.success) {
+          // The API returns { success: true, search: {...} }
+          const searchData = (response as any).search || response.data;
           setScheduledSearchDetails({
             type: 'search',
-            data: response
+            data: searchData
           });
         }
       }
@@ -737,7 +738,8 @@ const MySchedules: React.FC = () => {
                             Status
                           </Typography>
                           <Chip
-                            label={selectedSchedule.is_active ? 'Active' : 'Inactive'}
+                          // make the color of text white
+                            label={selectedSchedule.is_active ? <span style={{ color: '#FFFFFF' }}>Active</span> : <span style={{ color: '#1E293B' }}>Inactive</span>}
                             size="small"
                             color={selectedSchedule.is_active ? 'success' : 'default'}
                             variant={selectedSchedule.is_active ? 'filled' : 'outlined'}
@@ -795,11 +797,11 @@ const MySchedules: React.FC = () => {
                                 Description: {(scheduledSearchDetails.data as any).description || 'N/A'}
                               </Typography>
                               <Typography variant="body2" sx={{ color: '#1E293B', mb: 2, fontWeight: 600 }}>
-                                Search Items: {(scheduledSearchDetails.data as any).collection_items?.length || 0}
+                                Search Items: {(scheduledSearchDetails.data as any).searches?.length || (scheduledSearchDetails.data as any).search_count || 0}
                               </Typography>
-                              {(scheduledSearchDetails.data as any).collection_items && (
+                              {/* {((scheduledSearchDetails.data as any).searches && (scheduledSearchDetails.data as any).searches.length > 0) && (
                                 <List dense>
-                                  {(scheduledSearchDetails.data as any).collection_items.slice(0, 5).map((item: any, index: number) => (
+                                  {(scheduledSearchDetails.data as any).searches.slice(0, 5).map((item: any, index: number) => (
                                     <ListItem key={index} sx={{ px: 0 }}>
                                       <ListItemText
                                         primary={`${item.location} - ${item.check_in_date} to ${item.check_out_date}`}
@@ -808,7 +810,7 @@ const MySchedules: React.FC = () => {
                                     </ListItem>
                                   ))}
                                 </List>
-                              )}
+                              )} */}
                             </Box>
                           ) : (
                             <Box>

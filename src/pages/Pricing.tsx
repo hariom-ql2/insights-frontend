@@ -3,7 +3,7 @@ import {
   Box, 
   Typography, 
   Container, 
-  Grid, 
+  Grid,
   Card, 
   CardContent, 
   Button, 
@@ -191,7 +191,7 @@ const Pricing = () => {
         <Box sx={{ mb: 6 }}>
           <Grid container spacing={3} justifyContent="center">
             {plans.map((plan) => (
-              <Grid item xs={12} sm={6} md={4} key={plan.name}>
+              <Grid key={plan.name} sx={{ width: { xs: '100%', sm: 'calc(50% - 12px)', md: 'calc(33.333% - 16px)' } }}>
                 <Card sx={{ 
                   height: '100%', 
                   borderRadius: 3,
@@ -330,8 +330,8 @@ const Pricing = () => {
           >
             Frequently Asked Questions
           </Typography>
-          <Grid container spacing={3}>
-            <Grid item xs={12} md={6}>
+          <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 3 }}>
+            <Box sx={{ flex: 1 }}>
               <Box sx={{ mb: 3 }}>
                 <Typography 
                   variant="h6" 
@@ -376,8 +376,8 @@ const Pricing = () => {
                   We offer a 14-day free trial for all plans. No credit card required.
                 </Typography>
               </Box>
-            </Grid>
-            <Grid item xs={12} md={6}>
+            </Box>
+            <Box sx={{ flex: 1 }}>
               <Box sx={{ mb: 3 }}>
                 <Typography 
                   variant="h6" 
@@ -422,8 +422,8 @@ const Pricing = () => {
                   Yes, you can cancel your subscription at any time. Your access continues until the end of the billing period.
                 </Typography>
               </Box>
-            </Grid>
-          </Grid>
+            </Box>
+          </Box>
         </Box>
 
         {/* Payment Dialog */}

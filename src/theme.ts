@@ -307,6 +307,26 @@ const theme = createTheme({
         },
       },
     },
+    // Override MUI Date/Time Picker action bar buttons
+    MuiPickersActionBar: {
+      styleOverrides: {
+        root: {
+          '& .MuiButton-root': {
+            color: '#6818A5',
+            backgroundColor: 'transparent',
+            fontWeight: 600,
+            textTransform: 'none',
+            '&:hover': {
+              backgroundColor: '#F7F4FD',
+            },
+            '&.MuiButton-textPrimary': {
+              color: '#6818A5',
+              backgroundColor: 'transparent',
+            },
+          },
+        },
+      },
+    },
   },
 });
 

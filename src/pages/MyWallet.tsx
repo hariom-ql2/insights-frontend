@@ -1,9 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   Box,
-  Paper,
   Typography,
-  Container,
   CircularProgress,
   Card,
   CardContent,
@@ -78,7 +76,8 @@ const MyWallet = () => {
         return;
       }
 
-      const response = await fetch('http://localhost:5001/wallet', {
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+      const response = await fetch(`${API_BASE_URL}/wallet`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
@@ -166,7 +165,8 @@ const MyWallet = () => {
     setAddMoneyLoading(true);
     setError(null);
     try {
-      const response = await fetch('http://localhost:5001/wallet/add-money', {
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+      const response = await fetch(`${API_BASE_URL}/wallet/add-money`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -186,7 +186,13 @@ const MyWallet = () => {
         // Show success message (you could use a toast notification here)
         alert(data.message || 'Money added successfully!');
       } else {
-        setError(data.message || 'Failed to add money. Please try again.');
+        // Check for numeric overflow error and show user-friendly message
+        const errorMessage = data.message || 'Failed to add money. Please try again.';
+        if (errorMessage.includes('numeric field overflow') || errorMessage.includes('SQLSTATE 22003')) {
+          setError('The wallet balance limit has been reached. Please contact support for assistance.');
+        } else {
+          setError(errorMessage);
+        }
       }
     } catch (error) {
       console.error('Error adding money:', error);

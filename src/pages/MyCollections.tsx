@@ -41,7 +41,8 @@ import {
   FilterList as FilterListIcon,
   ArrowUpward,
   ArrowDownward,
-  UnfoldMore
+  UnfoldMore,
+  ArrowBack
 } from '@mui/icons-material';
 import axios from 'axios';
 import { format, startOfToday } from 'date-fns';
@@ -160,6 +161,9 @@ const MyCollections: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [selectedCollection, setSelectedCollection] = useState<Collection | null>(null);
   
+  // API base URL - defined at component level for all functions to use
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+  
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
@@ -211,6 +215,7 @@ const MyCollections: React.FC = () => {
   // State for adding items to collection
   const [editDialogTab, setEditDialogTab] = useState(0); // 0 = View Items, 1 = Add Items
   const [addItemsTab, setAddItemsTab] = useState(0); // 0 = Manual, 1 = CSV Upload
+  const [isEditingItemInDialog, setIsEditingItemInDialog] = useState(false); // Track if editing item within main dialog
   const [newItems, setNewItems] = useState<SearchItem[]>([]);
   const [newItemForm, setNewItemForm] = useState({
     city: '',
@@ -224,8 +229,11 @@ const MyCollections: React.FC = () => {
     starRatingOrMore: false
   });
   const [posOptions, setPosOptions] = useState<string[]>([]);
-  const [addingItems, setAddingItems] = useState(false);
   const [editItemPosOptions, setEditItemPosOptions] = useState<string[]>([]);
+  
+  // State for tracking pending changes before batch save
+  const [pendingItemEdits, setPendingItemEdits] = useState<Record<number, Partial<SearchItem>>>({});
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   useEffect(() => {
     if (isAuthenticated && user) {
@@ -234,10 +242,17 @@ const MyCollections: React.FC = () => {
     }
   }, [isAuthenticated, user]);
 
+  // Fetch sites when edit dialog opens to ensure they're available
+  useEffect(() => {
+    if (showEditDialog) {
+      fetchSites();
+    }
+  }, [showEditDialog]);
+
   const fetchSites = async () => {
     try {
       // Use the same API call pattern as MultiSearchForm
-      const response = await axios.get('http://localhost:5001/sites');
+      const response = await axios.get(`${API_BASE_URL}/sites`);
       const allSites = response.data.sites || [];
       
       // Convert to the format expected by the form
@@ -256,7 +271,7 @@ const MyCollections: React.FC = () => {
   // Fetch POS when selectedWebsite changes in add items form
   useEffect(() => {
     if (newItemForm.selectedWebsite) {
-      axios.get('http://localhost:5001/pos', { params: { site_name: newItemForm.selectedWebsite.name } })
+      axios.get(`${API_BASE_URL}/pos`, { params: { site_name: newItemForm.selectedWebsite.name } })
         .then(res => setPosOptions(res.data.pos || []))
         .catch(() => setPosOptions([]));
     } else {
@@ -267,13 +282,27 @@ const MyCollections: React.FC = () => {
   // Fetch POS when editing item website changes
   useEffect(() => {
     if (editFormData.selectedWebsites.length > 0) {
-      axios.get('http://localhost:5001/pos', { params: { site_name: editFormData.selectedWebsites[0].name } })
+      axios.get(`${API_BASE_URL}/pos`, { params: { site_name: editFormData.selectedWebsites[0].name } })
         .then(res => setEditItemPosOptions(res.data.pos || []))
         .catch(() => setEditItemPosOptions([]));
     } else {
       setEditItemPosOptions([]);
     }
   }, [editFormData.selectedWebsites]);
+
+  // Compute hasUnsavedChanges based on pending edits, new items, and collection name changes
+  useEffect(() => {
+    if (!editingCollection) {
+      setHasUnsavedChanges(false);
+      return;
+    }
+    
+    const nameChanged = editingCollectionName.trim() !== editingCollection.name;
+    const hasPendingEdits = Object.keys(pendingItemEdits).length > 0;
+    const hasNewItems = newItems.length > 0;
+    
+    setHasUnsavedChanges(nameChanged || hasPendingEdits || hasNewItems);
+  }, [editingCollection, editingCollectionName, pendingItemEdits, newItems]);
 
   // Country codes list
   const countryCodes = [
@@ -341,41 +370,12 @@ const MyCollections: React.FC = () => {
     setNewItems(newItems.filter((_, i) => i !== index));
   };
 
-  const handleAddItemsToCollection = async () => {
+  const handleAddItemsToCollection = () => {
     if (!editingCollection || newItems.length === 0) return;
     
-    setAddingItems(true);
-    try {
-      const jobs = newItems.map(item => ({
-        website: { name: item.website, pos: item.pos || [] },
-        location: item.location,
-        checkInDate: item.check_in_date,
-        checkOutDate: item.check_out_date,
-        adults: item.adults,
-        starRating: item.star_rating
-      }));
-
-      const response = await apiService.post(`/collection/${editingCollection.id}/items`, { jobs }, token);
-      
-      if (response.success) {
-        alert(response.message || 'Items added successfully!');
-        setNewItems([]);
-        setEditDialogTab(0); // Switch back to View Items tab
-        // Refresh collection data
-        const updatedCollection = await apiService.get(`/collection/${editingCollection.id}`, token);
-        if (updatedCollection.success) {
-          setEditingCollection((updatedCollection as any).collection);
-        }
-        fetchCollections(); // Refresh the list
-      } else {
-        alert(response.message || 'Failed to add items');
-      }
-    } catch (error: any) {
-      console.error('Error adding items:', error);
-      alert(error.response?.data?.message || 'Error adding items. Please try again.');
-    } finally {
-      setAddingItems(false);
-    }
+    // Just switch to View Items tab - items will be saved when main Save Changes is clicked
+    setEditDialogTab(0);
+    // hasUnsavedChanges will be updated automatically by useEffect
   };
 
   // CSV parsing function (similar to MultiSearchForm)
@@ -415,33 +415,49 @@ const MyCollections: React.FC = () => {
             const adultsStr = columns[6];
             const posValue = columns.length > 7 ? columns[7] : '';
             
-            // Parse dates from YYYYMMDD format
+            // Parse dates - support both days offset (≤3 chars) and YYYYMMDD format
             let checkInDate: Date | null = null;
             let checkOutDate: Date | null = null;
             
-            if (checkInStr && checkInStr.length === 8) {
-              const year = parseInt(checkInStr.substring(0, 4));
-              const month = parseInt(checkInStr.substring(4, 6)) - 1;
-              const day = parseInt(checkInStr.substring(6, 8));
-              if (!isNaN(year) && !isNaN(month) && !isNaN(day)) {
-                checkInDate = new Date(year, month, day);
-                if (checkInDate.getFullYear() !== year || checkInDate.getMonth() !== month || checkInDate.getDate() !== day) {
-                  checkInDate = null;
+            // Helper function to parse date from either format
+            const parseDateFromCSV = (dateStr: string): Date | null => {
+              if (!dateStr) return null;
+              
+              // Days offset format: string length ≤ 3
+              if (dateStr.length <= 3) {
+                const daysOffset = parseInt(dateStr, 10);
+                // Validate: must be a valid number between 0-999
+                if (!isNaN(daysOffset) && daysOffset >= 0 && daysOffset <= 999) {
+                  const today = new Date();
+                  today.setHours(0, 0, 0, 0); // Reset time to midnight
+                  const resultDate = new Date(today);
+                  resultDate.setDate(today.getDate() + daysOffset);
+                  return resultDate;
+                }
+                return null; // Invalid days offset
+              }
+              
+              // YYYYMMDD format: string length === 8
+              if (dateStr.length === 8) {
+                const year = parseInt(dateStr.substring(0, 4));
+                const month = parseInt(dateStr.substring(4, 6)) - 1; // JS months are 0-indexed
+                const day = parseInt(dateStr.substring(6, 8));
+                if (!isNaN(year) && !isNaN(month) && !isNaN(day)) {
+                  const resultDate = new Date(year, month, day);
+                  // Validate date
+                  if (resultDate.getFullYear() === year && 
+                      resultDate.getMonth() === month && 
+                      resultDate.getDate() === day) {
+                    return resultDate;
+                  }
                 }
               }
-            }
+              
+              return null; // Invalid format
+            };
             
-            if (checkOutStr && checkOutStr.length === 8) {
-              const year = parseInt(checkOutStr.substring(0, 4));
-              const month = parseInt(checkOutStr.substring(4, 6)) - 1;
-              const day = parseInt(checkOutStr.substring(6, 8));
-              if (!isNaN(year) && !isNaN(month) && !isNaN(day)) {
-                checkOutDate = new Date(year, month, day);
-                if (checkOutDate.getFullYear() !== year || checkOutDate.getMonth() !== month || checkOutDate.getDate() !== day) {
-                  checkOutDate = null;
-                }
-              }
-            }
+            checkInDate = parseDateFromCSV(checkInStr);
+            checkOutDate = parseDateFromCSV(checkOutStr);
             
             // Parse star rating
             let starRating = parseInt(starRatingStr) || 1;
@@ -725,12 +741,14 @@ const MyCollections: React.FC = () => {
     }
   };
 
-  const handleEditCollection = (collection: Collection) => {
+  const handleEditCollection = async (collection: Collection) => {
     setEditingCollection(collection);
     setEditingCollectionName(collection.name);
     setEditDialogTab(0); // Reset to View Items tab
     setAddItemsTab(0); // Reset to Manual tab
     setNewItems([]); // Clear new items
+    setPendingItemEdits({}); // Clear pending item edits
+    setHasUnsavedChanges(false); // Reset unsaved changes flag
     setNewItemForm({
       city: '',
       countryCode: '',
@@ -742,6 +760,8 @@ const MyCollections: React.FC = () => {
       starRating: 1,
       starRatingOrMore: false
     });
+    // Fetch sites when opening edit dialog to ensure they're available
+    await fetchSites();
     setShowEditDialog(true);
   };
 
@@ -776,18 +796,203 @@ const MyCollections: React.FC = () => {
     }
   };
 
+  const handleSaveCollection = async () => {
+    if (!editingCollection || !token) return;
+    
+    // Don't save if user is currently editing an item
+    if (isEditingItemInDialog) {
+      alert('Please finish editing the item first, or cancel to go back.');
+      return;
+    }
+    
+    // Check if there are any changes to save
+    const nameChanged = editingCollectionName.trim() !== editingCollection.name;
+    const hasPendingEdits = Object.keys(pendingItemEdits).length > 0;
+    const hasNewItems = newItems.length > 0;
+    
+    if (!nameChanged && !hasPendingEdits && !hasNewItems) {
+      // No changes to save, just close
+      handleCancelEdit();
+      return;
+    }
+    
+    if (!editingCollectionName.trim()) {
+      alert('Collection name cannot be empty');
+      return;
+    }
+    
+    try {
+      // Apply pending item edits to create updated items list
+      const updatedItems = editingCollection.searches.map(item => {
+        const pendingEdit = pendingItemEdits[item.id];
+        if (pendingEdit) {
+          // Merge pending edit with existing item, ensuring all fields are preserved
+          // Only use pending edit values if they are explicitly provided (not undefined/null)
+          return {
+            ...item,
+            ...(pendingEdit.location !== undefined ? { location: pendingEdit.location } : {}),
+            ...(pendingEdit.check_in_date !== undefined && pendingEdit.check_in_date !== null ? { check_in_date: pendingEdit.check_in_date } : {}),
+            ...(pendingEdit.check_out_date !== undefined && pendingEdit.check_out_date !== null ? { check_out_date: pendingEdit.check_out_date } : {}),
+            ...(pendingEdit.adults !== undefined ? { adults: pendingEdit.adults } : {}),
+            ...(pendingEdit.star_rating !== undefined ? { star_rating: pendingEdit.star_rating } : {}),
+            ...(pendingEdit.website !== undefined ? { website: pendingEdit.website } : {}),
+            ...(pendingEdit.pos !== undefined ? { pos: pendingEdit.pos } : {})
+          } as SearchItem;
+        }
+        return item;
+      });
+      
+      // Combine existing items (with edits applied) and new items
+      const allItems = [...updatedItems, ...newItems];
+      
+      if (allItems.length === 0) {
+        alert('Cannot save collection with no items. Please add at least one item.');
+        return;
+      }
+      
+      // Convert all items to jobs format for the API
+      // Ensure dates are in YYYY-MM-DD format
+      const formatDateForAPI = (dateStr: string | Date | null | undefined): string => {
+        if (!dateStr) return '';
+        if (typeof dateStr === 'string') {
+          // If already in YYYY-MM-DD format, return as is
+          if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+            return dateStr;
+          }
+          // Otherwise parse it
+          const date = parseDateString(dateStr);
+          if (!date) return '';
+          const year = date.getFullYear();
+          const month = String(date.getMonth() + 1).padStart(2, '0');
+          const day = String(date.getDate()).padStart(2, '0');
+          return `${year}-${month}-${day}`;
+        }
+        if (dateStr instanceof Date) {
+          const year = dateStr.getFullYear();
+          const month = String(dateStr.getMonth() + 1).padStart(2, '0');
+          const day = String(dateStr.getDate()).padStart(2, '0');
+          return `${year}-${month}-${day}`;
+        }
+        return '';
+      };
+      
+      const jobs = allItems.map(item => {
+        const checkInDate = formatDateForAPI(item.check_in_date);
+        const checkOutDate = formatDateForAPI(item.check_out_date);
+        
+        // Validate dates are present
+        if (!checkInDate || !checkOutDate) {
+          throw new Error(`Item "${item.location}" has invalid dates. Please check check-in and check-out dates.`);
+        }
+        
+        return {
+          website: {
+            name: item.website,
+            pos: item.pos || []
+          },
+          location: item.location,
+          checkInDate: checkInDate,
+          checkOutDate: checkOutDate,
+          adults: item.adults,
+          starRating: item.star_rating
+        };
+      });
+      
+      // Update collection via API with all changes
+      const response = await apiService.put(
+        `/collection/${editingCollection.id}`,
+        {
+          name: editingCollectionName.trim(),
+          description: editingCollection.description || null,
+          jobs: jobs
+        },
+        token
+      );
+      
+      if (response.success) {
+        // Update collection name in state
+        setEditingCollectionName(editingCollectionName.trim());
+        
+        // Refresh collection data from API to get latest state
+        const updatedCollection = await apiService.get(`/collection/${editingCollection.id}`, token);
+        if (updatedCollection.success) {
+          const refreshedCollection = (updatedCollection as any).collection;
+          setEditingCollection(refreshedCollection);
+          // Update collection name to match what was saved
+          setEditingCollectionName(refreshedCollection.name);
+        }
+        
+        // Clear all pending changes
+        setPendingItemEdits({});
+        setNewItems([]);
+        setHasUnsavedChanges(false);
+        
+        // Refresh the collections list
+        fetchCollections();
+        
+        alert('Collection updated successfully!');
+        // Keep dialog open so user can see the changes
+      } else {
+        alert(response.message || 'Failed to update collection');
+      }
+    } catch (error: any) {
+      console.error('Error updating collection:', error);
+      alert(error.response?.data?.message || 'Error updating collection. Please try again.');
+    }
+  };
+
   const handleCancelEdit = () => {
     setShowEditDialog(false);
     setEditingCollection(null);
     setEditingCollectionName('');
+    setIsEditingItemInDialog(false);
+    setEditingItem(null);
+    setNewItems([]);
+    setPendingItemEdits({});
+    setHasUnsavedChanges(false);
+    setEditDialogTab(0);
+    setAddItemsTab(0);
+  };
+
+  // Helper function to parse dates correctly - handle YYYY-MM-DD format without timezone issues
+  const parseDateString = (dateStr: string | Date | null | undefined): Date | null => {
+    if (!dateStr) return null;
+    // If already a Date object, return it
+    if (dateStr instanceof Date) {
+      return isNaN(dateStr.getTime()) ? null : dateStr;
+    }
+    // If it's not a string, return null
+    if (typeof dateStr !== 'string') {
+      return null;
+    }
+    // Parse YYYY-MM-DD format correctly (treat as local date, not UTC)
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+      const year = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10) - 1; // Month is 0-indexed
+      const day = parseInt(parts[2], 10);
+      if (isNaN(year) || isNaN(month) || isNaN(day)) {
+        return null;
+      }
+      return new Date(year, month, day);
+    }
+    // Fallback to standard parsing
+    const fallback = new Date(dateStr);
+    return isNaN(fallback.getTime()) ? null : fallback;
   };
 
   const handleEditCollectionItem = async (item: SearchItem) => {
     setEditingItem(item);
     
-    // Parse dates
-    const checkInDate = new Date(item.check_in_date);
-    const checkOutDate = new Date(item.check_out_date);
+    // Parse dates correctly using helper function
+    const checkInDate = parseDateString(item.check_in_date);
+    const checkOutDate = parseDateString(item.check_out_date);
+    
+    // Validate dates
+    if (!checkInDate || !checkOutDate) {
+      alert('Invalid dates in collection item. Please contact support.');
+      return;
+    }
     
     // Parse star rating
     const starRatingStr = item.star_rating;
@@ -822,7 +1027,7 @@ const MyCollections: React.FC = () => {
     // Fetch POS options for the selected website
     if (item.website) {
       try {
-        const res = await axios.get('http://localhost:5001/pos', { params: { site_name: item.website } });
+        const res = await axios.get(`${API_BASE_URL}/pos`, { params: { site_name: item.website } });
         setEditItemPosOptions(res.data.pos || []);
       } catch {
         setEditItemPosOptions([]);
@@ -831,26 +1036,79 @@ const MyCollections: React.FC = () => {
       setEditItemPosOptions([]);
     }
     
-    setShowEditItemDialog(true);
+    // If edit collection dialog is open, use in-dialog edit mode instead of opening new dialog
+    if (showEditDialog) {
+      setIsEditingItemInDialog(true);
+      setEditDialogTab(0); // Ensure we're on the View Items tab
+    } else {
+      setShowEditItemDialog(true);
+    }
   };
 
   const handleUpdateCollectionItem = async () => {
-    if (!editingItem || !editingCollection) return;
+    if (!editingItem || !editingCollection || !token) return;
 
+    // Validate required fields
+    if (!editFormData.checkInDate || !editFormData.checkOutDate) {
+      alert('Please select valid check-in and check-out dates');
+      return;
+    }
+
+    // Convert dates to YYYY-MM-DD format correctly (local date, not UTC)
+    const formatDateForAPI = (date: Date | null): string => {
+      if (!date) return '';
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    // Convert form data back to the format expected by the backend
+    const updatedItem: Partial<SearchItem> = {
+      location: editFormData.location.trim(),
+      check_in_date: formatDateForAPI(editFormData.checkInDate),
+      check_out_date: formatDateForAPI(editFormData.checkOutDate),
+      adults: editFormData.adults,
+      star_rating: editFormData.starRatingOrMore ? `${editFormData.starRating}+` : editFormData.starRating.toString(),
+      website: editFormData.selectedWebsites.length > 0 ? editFormData.selectedWebsites[0].name : '',
+      pos: editFormData.selectedWebsites.length > 0 ? (editFormData.posMapping[editFormData.selectedWebsites[0].code] || []) : []
+    };
+
+    // If editing within the main dialog, track changes instead of saving immediately
+    if (isEditingItemInDialog) {
+      // Store pending edit
+      setPendingItemEdits(prev => ({
+        ...prev,
+        [editingItem.id]: updatedItem
+      }));
+      
+      // Update local state for preview
+      if (editingCollection) {
+        const updatedCollection = { ...editingCollection };
+        const itemIndex = updatedCollection.searches.findIndex(item => item.id === editingItem.id);
+        if (itemIndex !== -1) {
+          updatedCollection.searches[itemIndex] = {
+            ...updatedCollection.searches[itemIndex],
+            ...updatedItem
+          } as SearchItem;
+          setEditingCollection(updatedCollection);
+        }
+      }
+      
+      // Close edit mode
+      setEditingItem(null);
+      setIsEditingItemInDialog(false);
+      return;
+    }
+
+    // If editing outside main dialog (standalone), save immediately
     try {
-      // Convert form data back to the format expected by the backend
-      const updatedItem = {
-        location: editFormData.location,
-        check_in_date: editFormData.checkInDate?.toISOString().split('T')[0],
-        check_out_date: editFormData.checkOutDate?.toISOString().split('T')[0],
-        adults: editFormData.adults,
-        star_rating: editFormData.starRatingOrMore ? `${editFormData.starRating}+` : editFormData.starRating.toString(),
-        website: editFormData.selectedWebsites.length > 0 ? editFormData.selectedWebsites[0].name : '',
-        pos: editFormData.selectedWebsites.length > 0 ? (editFormData.posMapping[editFormData.selectedWebsites[0].code] || []) : []
-      };
-
-      // Update the collection item via backend
-      await apiService.put(`/collection-item/${editingItem.id}`, updatedItem, token);
+      const response = await apiService.put(`/collection-item/${editingItem.id}`, updatedItem, token);
+      
+      if (!response.success) {
+        alert(response.message || 'Failed to update collection item');
+        return;
+      }
       
       // Update the editingCollection state immediately to reflect changes
       if (editingCollection) {
@@ -859,14 +1117,8 @@ const MyCollections: React.FC = () => {
         if (itemIndex !== -1) {
           updatedCollection.searches[itemIndex] = {
             ...updatedCollection.searches[itemIndex],
-            location: updatedItem.location,
-            check_in_date: updatedItem.check_in_date || updatedCollection.searches[itemIndex].check_in_date,
-            check_out_date: updatedItem.check_out_date || updatedCollection.searches[itemIndex].check_out_date,
-            adults: updatedItem.adults,
-            star_rating: updatedItem.star_rating,
-            website: updatedItem.website,
-            pos: updatedItem.pos
-          };
+            ...updatedItem
+          } as SearchItem;
           setEditingCollection(updatedCollection);
         }
       }
@@ -875,13 +1127,13 @@ const MyCollections: React.FC = () => {
       fetchCollections();
       
       // Close dialog
-      setEditingItem(null);
       setShowEditItemDialog(false);
+      setEditingItem(null);
       
       alert('Collection item updated successfully!');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error updating collection item:', error);
-      alert('Error updating collection item');
+      alert(error.response?.data?.message || 'Error updating collection item. Please try again.');
     }
   };
 
@@ -1433,7 +1685,12 @@ const MyCollections: React.FC = () => {
                         <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{index + 1}</TableCell>
                         <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{search.location}</TableCell>
                         <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>
-                          {format(new Date(search.check_in_date), 'MMM dd')} - {format(new Date(search.check_out_date), 'MMM dd, yyyy')}
+                          {(() => {
+                            const checkIn = parseDateString(search.check_in_date);
+                            const checkOut = parseDateString(search.check_out_date);
+                            if (!checkIn || !checkOut) return 'Invalid dates';
+                            return `${format(checkIn, 'MMM dd')} - ${format(checkOut, 'MMM dd, yyyy')}`;
+                          })()}
                         </TableCell>
                         <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{search.adults}</TableCell>
                         <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>
@@ -1529,672 +1786,518 @@ const MyCollections: React.FC = () => {
             </Box>
           </Box>
         </DialogTitle>
-        <DialogContent>
+        <DialogContent sx={{ 
+          height: '600px', 
+          overflow: 'hidden',
+          position: 'relative',
+          p: 0
+        }}>
           {editingCollection && (
-            <Box>
-              {/* Collection Name Editing */}
-              <Box sx={{ mb: 3 }}>
-                <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 700, color: '#0F172A', fontFamily: '"Urbanist", sans-serif' }}>
-                  Collection Name
-                </Typography>
-                <TextField
-                  fullWidth
-                  value={editingCollectionName}
-                  onChange={(e) => setEditingCollectionName(e.target.value)}
-                  placeholder="Enter collection name..."
-                  size="small"
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      borderRadius: 2,
-                      '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: '#6818A5',
-                      },
-                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                        borderColor: '#6818A5',
-                        borderWidth: 2,
-                      },
-                    },
-                  }}
-                />
-              </Box>
-
-              {/* Tabs for View Items / Add Items - Compact Card Style */}
-              <Box sx={{ mb: 2.5 }}>
-                <Box sx={{ 
-                  display: 'grid', 
-                  gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, 
-                  gap: 1.5
-                }}>
-                  {/* View Items Tab Card */}
-                  <Paper
-                    onClick={() => setEditDialogTab(0)}
+            <Box sx={{ 
+              position: 'relative',
+              width: '200%',
+              height: '100%',
+              display: 'flex',
+              transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+              transform: isEditingItemInDialog ? 'translateX(-50%)' : 'translateX(0%)'
+            }}>
+              {/* View Items Panel - Left Side */}
+              <Box sx={{ 
+                width: '50%',
+                height: '100%',
+                overflow: 'auto',
+                p: 3,
+                flexShrink: 0
+              }}>
+                {/* Collection Name Editing */}
+                <Box sx={{ mb: 3 }}>
+                  <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 700, color: '#0F172A', fontFamily: '"Urbanist", sans-serif' }}>
+                    Collection Name
+                  </Typography>
+                  <TextField
+                    fullWidth
+                    value={editingCollectionName}
+                    onChange={(e) => setEditingCollectionName(e.target.value)}
+                    placeholder="Enter collection name..."
+                    size="small"
                     sx={{
-                      p: 1.5,
-                      cursor: 'pointer',
-                      border: editDialogTab === 0 ? '2px solid #6818A5' : '1px solid #E2E8F0',
-                      borderRadius: 1.5,
-                      backgroundColor: editDialogTab === 0 ? '#F7F4FD' : '#FFFFFF',
-                      transition: 'all 0.2s ease',
-                      '&:hover': {
-                        borderColor: '#6818A5',
-                        backgroundColor: '#F7F4FD',
-                        boxShadow: '0 2px 8px rgba(104, 24, 165, 0.1)',
+                      '& .MuiOutlinedInput-root': {
+                        borderRadius: 2,
+                        '&:hover .MuiOutlinedInput-notchedOutline': {
+                          borderColor: '#6818A5',
+                        },
+                        '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                          borderColor: '#6818A5',
+                          borderWidth: 2,
+                        },
                       },
                     }}
-                  >
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                      <Box
-                        sx={{
-                          width: 32,
-                          height: 32,
-                          borderRadius: 1.5,
-                          backgroundColor: editDialogTab === 0 ? '#6818A5' : '#F7F4FD',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          flexShrink: 0,
-                          transition: 'all 0.2s ease',
-                        }}
-                      >
-                        <VisibilityIcon 
-                          sx={{ 
-                            fontSize: 18, 
-                            color: editDialogTab === 0 ? '#FFFFFF' : '#6818A5',
-                            transition: 'color 0.2s ease',
-                          }} 
-                        />
-                      </Box>
-                      <Typography 
-                        variant="subtitle1" 
-                        sx={{ 
-                          fontWeight: 700, 
-                          color: '#0F172A',
-                          fontFamily: '"Urbanist", sans-serif',
-                        }}
-                      >
-                        View Items
-                      </Typography>
-                    </Box>
-                  </Paper>
-
-                  {/* Add Items Tab Card */}
-                  <Paper
-                    onClick={() => setEditDialogTab(1)}
-                    sx={{
-                      p: 1.5,
-                      cursor: 'pointer',
-                      border: editDialogTab === 1 ? '2px solid #6818A5' : '1px solid #E2E8F0',
-                      borderRadius: 1.5,
-                      backgroundColor: editDialogTab === 1 ? '#F7F4FD' : '#FFFFFF',
-                      transition: 'all 0.2s ease',
-                      '&:hover': {
-                        borderColor: '#6818A5',
-                        backgroundColor: '#F7F4FD',
-                        boxShadow: '0 2px 8px rgba(104, 24, 165, 0.1)',
-                      },
-                    }}
-                  >
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                      <Box
-                        sx={{
-                          width: 32,
-                          height: 32,
-                          borderRadius: 1.5,
-                          backgroundColor: editDialogTab === 1 ? '#6818A5' : '#F7F4FD',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          flexShrink: 0,
-                          transition: 'all 0.2s ease',
-                        }}
-                      >
-                        <AddIcon 
-                          sx={{ 
-                            fontSize: 18, 
-                            color: editDialogTab === 1 ? '#FFFFFF' : '#6818A5',
-                            transition: 'color 0.2s ease',
-                          }} 
-                        />
-                      </Box>
-                      <Typography 
-                        variant="subtitle1" 
-                        sx={{ 
-                          fontWeight: 700, 
-                          color: '#0F172A',
-                          fontFamily: '"Urbanist", sans-serif',
-                        }}
-                      >
-                        Add Items
-                      </Typography>
-                    </Box>
-                  </Paper>
+                  />
                 </Box>
-              </Box>
 
-              {/* Tab Panel 0: View Items */}
-              {editDialogTab === 0 && (
-                <Box>
-              <Typography variant="h6" sx={{ mb: 2, fontWeight: 800, color: '#0F172A', fontFamily: '"Urbanist", sans-serif' }}>
-                Searches ({editingCollection.search_count})
-              </Typography>
-
-              <TableContainer component={Paper} sx={{ maxHeight: 400 }}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow sx={{ backgroundColor: '#F8FAFC' }}>
-                      <TableCell sx={{ fontWeight: 800, color: '#0F172A', width: '60px' }}>#</TableCell>
-                      <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Location</TableCell>
-                      <TableCell sx={{ fontWeight: 800, color: '#0F172A', width: '120px' }}>Dates</TableCell>
-                      <TableCell sx={{ fontWeight: 800, color: '#0F172A', width: '80px' }}>Adults</TableCell>
-                      <TableCell sx={{ fontWeight: 800, color: '#0F172A', width: '100px' }}>Star Rating</TableCell>
-                      <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Websites</TableCell>
-                      <TableCell sx={{ fontWeight: 800, color: '#0F172A', width: '80px' }}>Actions</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {editingCollection.searches.map((search, index) => (
-                      <TableRow key={search.id} sx={{ '&:hover': { backgroundColor: '#F8FAFC' } }}>
-                        <TableCell>{index + 1}</TableCell>
-                        <TableCell>
-                          <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                            {search.location}
-                          </Typography>
-                        </TableCell>
-                        <TableCell>
-                          <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                            {search.check_in_date} to {search.check_out_date}
-                          </Typography>
-                        </TableCell>
-                        <TableCell>{search.adults}</TableCell>
-                        <TableCell>
-                          <StarRatingDisplay rating={search.star_rating} />
-                        </TableCell>
-                        <TableCell>
-                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                            {search.website && (
-                              <Chip
-                                label={`${search.website}${search.pos && search.pos.length ? ` (${search.pos.join(', ')})` : ''}`}
-                                size="small"
-                                sx={{ 
-                                  fontSize: '0.7rem', 
-                                  height: '20px',
-                                  borderColor: '#E2E8F0',
-                                  color: '#1E293B',
-                                  fontWeight: 600
-                                }}
-                              />
-                            )}
-                          </Box>
-                        </TableCell>
-                        <TableCell>
-                          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                          <ActionButton 
-                            onClick={() => handleEditCollectionItem(search)}
-                            title="Edit Item"
-                          >
-                            <img src={editIcon} alt="Edit" style={{ width: 18, height: 18 }} />
-                          </ActionButton>
-                            <ActionButton 
-                              onClick={() => handleDeleteCollectionItem(search)}
-                              title="Delete Item"
-                            >
-                              <img src={deleteIcon} alt="Delete" style={{ width: 18, height: 18 }} />
-                            </ActionButton>
-                          </Box>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-
-              <Alert severity="info" sx={{ mt: 2, borderRadius: 2, backgroundColor: '#F7F4FD' }}>
-                <Typography variant="body2" sx={{ fontFamily: '"Urbanist", sans-serif' }}>
-                  <strong>Note:</strong> You can edit any search item in this collection. Click "Edit" on any item to modify its parameters.
-                </Typography>
-              </Alert>
-            </Box>
-          )}
-
-              {/* Tab Panel 1: Add Items */}
-              {editDialogTab === 1 && (
-                <Box>
-                  {/* Sub-tabs for Manual / CSV Upload - Line Divider Style */}
-                  <Box sx={{ mb: 2.5 }}>
-                    <Box sx={{ 
-                      display: 'flex', 
-                      borderBottom: '2px solid #E2E8F0',
-                      gap: 0
-                    }}>
-                      {/* Manual Tab */}
-                      <Box
-                        onClick={() => setAddItemsTab(0)}
-            sx={{ 
-                          flex: 1,
-                          px: 2,
-                          py: 1.5,
-                          cursor: 'pointer',
-                          borderBottom: addItemsTab === 0 ? '3px solid #6818A5' : '3px solid transparent',
-                          backgroundColor: addItemsTab === 0 ? '#F7F4FD' : 'transparent',
-                          transition: 'all 0.2s ease',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: 1,
-              '&:hover': { 
-                            backgroundColor: addItemsTab === 0 ? '#F7F4FD' : '#F8FAFC',
-                            borderBottomColor: addItemsTab === 0 ? '#6818A5' : '#CBD5E1',
-                          },
-                        }}
-                      >
-                        <AddIcon 
-            sx={{ 
-                            fontSize: 18, 
-                            color: addItemsTab === 0 ? '#6818A5' : '#64748B',
-                            transition: 'color 0.2s ease',
-                          }} 
-                        />
-                        <Typography 
-                          variant="subtitle1" 
-                          sx={{ 
-                            fontWeight: addItemsTab === 0 ? 700 : 600, 
-                            color: addItemsTab === 0 ? '#6818A5' : '#64748B',
-                            fontFamily: '"Urbanist", sans-serif',
+                {/* Tabs for View Items / Add Items - Compact Card Style */}
+                <Box sx={{ mb: 2.5 }}>
+                  <Box sx={{ 
+                    display: 'grid', 
+                    gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, 
+                    gap: 1.5
+                  }}>
+                    {/* View Items Tab Card */}
+                    <Paper
+                      onClick={() => setEditDialogTab(0)}
+                      sx={{
+                        p: 1.5,
+                        cursor: 'pointer',
+                        border: editDialogTab === 0 ? '2px solid #6818A5' : '1px solid #E2E8F0',
+                        borderRadius: 1.5,
+                        backgroundColor: editDialogTab === 0 ? '#F7F4FD' : '#FFFFFF',
+                        transition: 'all 0.2s ease',
+                        '&:hover': {
+                          borderColor: '#6818A5',
+                          backgroundColor: '#F7F4FD',
+                          boxShadow: '0 2px 8px rgba(104, 24, 165, 0.1)',
+                        },
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                        <Box
+                          sx={{
+                            width: 32,
+                            height: 32,
+                            borderRadius: 1.5,
+                            backgroundColor: editDialogTab === 0 ? '#6818A5' : '#F7F4FD',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
                             transition: 'all 0.2s ease',
                           }}
                         >
-                          Manual
+                          <VisibilityIcon 
+                            sx={{ 
+                              fontSize: 18, 
+                              color: editDialogTab === 0 ? '#FFFFFF' : '#6818A5',
+                              transition: 'color 0.2s ease',
+                            }} 
+                          />
+                        </Box>
+                        <Typography 
+                          variant="subtitle1" 
+                          sx={{ 
+                            fontWeight: 700, 
+                            color: '#0F172A',
+                            fontFamily: '"Urbanist", sans-serif',
+                          }}
+                        >
+                          View Items
                         </Typography>
                       </Box>
+                    </Paper>
 
-                      {/* Divider Line */}
-                      <Box
-                        sx={{
-                          width: '1px',
-                          backgroundColor: '#E2E8F0',
-                          my: 1
-                        }}
-                      />
-
-                      {/* CSV Upload Tab */}
-                      <Box
-                        onClick={() => setAddItemsTab(1)}
-                        sx={{
-                          flex: 1,
-                          px: 2,
-                          py: 1.5,
-                          cursor: 'pointer',
-                          borderBottom: addItemsTab === 1 ? '3px solid #6818A5' : '3px solid transparent',
-                          backgroundColor: addItemsTab === 1 ? '#F7F4FD' : 'transparent',
-                          transition: 'all 0.2s ease',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: 1,
-                          '&:hover': {
-                            backgroundColor: addItemsTab === 1 ? '#F7F4FD' : '#F8FAFC',
-                            borderBottomColor: addItemsTab === 1 ? '#6818A5' : '#CBD5E1',
-                          },
-                        }}
-                      >
-                        <FileUploadIcon 
-                          sx={{ 
-                            fontSize: 18, 
-                            color: addItemsTab === 1 ? '#6818A5' : '#64748B',
-                            transition: 'color 0.2s ease',
-                          }} 
-                        />
-                        <Typography 
-                          variant="subtitle1" 
-                          sx={{ 
-                            fontWeight: addItemsTab === 1 ? 700 : 600, 
-                            color: addItemsTab === 1 ? '#6818A5' : '#64748B',
-                            fontFamily: '"Urbanist", sans-serif',
+                    {/* Add Items Tab Card */}
+                    <Paper
+                      onClick={() => setEditDialogTab(1)}
+                      sx={{
+                        p: 1.5,
+                        cursor: 'pointer',
+                        border: editDialogTab === 1 ? '2px solid #6818A5' : '1px solid #E2E8F0',
+                        borderRadius: 1.5,
+                        backgroundColor: editDialogTab === 1 ? '#F7F4FD' : '#FFFFFF',
+                        transition: 'all 0.2s ease',
+                        '&:hover': {
+                          borderColor: '#6818A5',
+                          backgroundColor: '#F7F4FD',
+                          boxShadow: '0 2px 8px rgba(104, 24, 165, 0.1)',
+                        },
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                        <Box
+                          sx={{
+                            width: 32,
+                            height: 32,
+                            borderRadius: 1.5,
+                            backgroundColor: editDialogTab === 1 ? '#6818A5' : '#F7F4FD',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
                             transition: 'all 0.2s ease',
                           }}
                         >
-                          CSV Upload
-            </Typography>
-          </Box>
-                    </Box>
+                          <AddIcon 
+                            sx={{ 
+                              fontSize: 18, 
+                              color: editDialogTab === 1 ? '#FFFFFF' : '#6818A5',
+                              transition: 'color 0.2s ease',
+                            }} 
+                          />
+                        </Box>
+                        <Typography 
+                          variant="subtitle1" 
+                          sx={{ 
+                            fontWeight: 700, 
+                            color: '#0F172A',
+                            fontFamily: '"Urbanist", sans-serif',
+                          }}
+                        >
+                          Add Items
+                        </Typography>
+                      </Box>
+                    </Paper>
                   </Box>
+                </Box>
 
-                  {/* Manual Add Tab */}
-                  {addItemsTab === 0 && (
-                    <Paper sx={{ p: 3, backgroundColor: '#F8FAFC', borderRadius: 2, border: '1px solid #E2E8F0' }}>
-                      <Typography variant="h6" sx={{ mb: 3, fontWeight: 800, color: '#0F172A', fontFamily: '"Urbanist", sans-serif' }}>
-                        Add New Search Item
+                {/* Tab Panel 0: View Items */}
+                {editDialogTab === 0 && (
+                  <Box>
+                    <Typography variant="h6" sx={{ mb: 2, fontWeight: 800, color: '#0F172A', fontFamily: '"Urbanist", sans-serif' }}>
+                      Searches ({editingCollection.search_count + newItems.length})
                     </Typography>
-                      
-                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
-                        {/* Website and POS */}
-                        <Box sx={{ display: 'flex', gap: 2 }}>
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>Website</Typography>
-                            <FormControl fullWidth size="small">
-                              <Select
-                                value={newItemForm.selectedWebsite?.name || ''}
-                                onChange={(e) => {
-                                  const siteName = e.target.value;
-                                  setNewItemForm({
-                                    ...newItemForm,
-                                    selectedWebsite: siteName ? { name: siteName } : null,
-                                    selectedPOS: []
-                                  });
-                                }}
-                                displayEmpty
-            sx={{ 
-              borderRadius: 2,
-                                  backgroundColor: '#FFFFFF',
-                                  '& .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#E2E8F0'
-                                  },
-                                  '&:hover .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#6818A5'
-                                  },
-                                  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#6818A5',
-                                    borderWidth: 2
-                                  },
-                                  '& .MuiSelect-select': {
-                                    '&:hover': {
-                                      backgroundColor: 'rgba(104, 24, 165, 0.04)'
-                                    }
-                                  }
-                                }}
-                              >
-                                <MenuItem value="" disabled>Select website</MenuItem>
-                                {sites.map((site) => (
-                                  <MenuItem 
-                                    key={site.code} 
-                                    value={site.name}
-                                    sx={{
-                                      '&:hover': {
-                                        backgroundColor: 'rgba(104, 24, 165, 0.08)',
-                                        color: '#6818A5'
-                                      },
-                                      '&.Mui-selected': {
-                                        backgroundColor: 'rgba(104, 24, 165, 0.12)',
-                                        color: '#6818A5',
-                                        '&:hover': {
-                                          backgroundColor: 'rgba(104, 24, 165, 0.16)'
-                                        }
-                                      }
-                                    }}
+
+                    <TableContainer component={Paper} sx={{ maxHeight: 400 }}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow sx={{ backgroundColor: '#F8FAFC' }}>
+                            <TableCell sx={{ fontWeight: 800, color: '#0F172A', width: '60px' }}>#</TableCell>
+                            <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Location</TableCell>
+                            <TableCell sx={{ fontWeight: 800, color: '#0F172A', width: '120px' }}>Dates</TableCell>
+                            <TableCell sx={{ fontWeight: 800, color: '#0F172A', width: '80px' }}>Adults</TableCell>
+                            <TableCell sx={{ fontWeight: 800, color: '#0F172A', width: '100px' }}>Star Rating</TableCell>
+                            <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Websites</TableCell>
+                            <TableCell sx={{ fontWeight: 800, color: '#0F172A', width: '80px' }}>Actions</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {/* Show existing items with pending edits applied */}
+                          {editingCollection.searches.map((search, index) => {
+                            // Apply pending edits if any
+                            const pendingEdit = pendingItemEdits[search.id];
+                            const displayItem = pendingEdit ? { ...search, ...pendingEdit } as SearchItem : search;
+                            return (
+                            <TableRow key={search.id} sx={{ '&:hover': { backgroundColor: '#F8FAFC' } }}>
+                              <TableCell>{index + 1}</TableCell>
+                              <TableCell>
+                                <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                                  {displayItem.location}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
+                                  {(() => {
+                                    const checkIn = parseDateString(displayItem.check_in_date);
+                                    const checkOut = parseDateString(displayItem.check_out_date);
+                                    if (!checkIn || !checkOut) return 'Invalid dates';
+                                    return `${format(checkIn, 'MM/dd/yyyy')} to ${format(checkOut, 'MM/dd/yyyy')}`;
+                                  })()}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>{displayItem.adults}</TableCell>
+                              <TableCell>
+                                <StarRatingDisplay rating={displayItem.star_rating} />
+                              </TableCell>
+                              <TableCell>
+                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                  {displayItem.website && (
+                                    <Chip
+                                      label={`${displayItem.website}${displayItem.pos && displayItem.pos.length ? ` (${displayItem.pos.join(', ')})` : ''}`}
+                                      size="small"
+                                      sx={{ 
+                                        fontSize: '0.7rem', 
+                                        height: '20px',
+                                        borderColor: '#E2E8F0',
+                                        color: '#1E293B',
+                                        fontWeight: 600
+                                      }}
+                                    />
+                                  )}
+                                </Box>
+                              </TableCell>
+                              <TableCell>
+                                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                                  <ActionButton 
+                                    onClick={() => handleEditCollectionItem(search)}
+                                    title="Edit Item"
                                   >
-                                    {site.name}
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
-          </Box>
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>POS (Optional)</Typography>
-                            <FormControl fullWidth size="small">
-                              <Select
-                                multiple
-                                value={newItemForm.selectedPOS}
-                                onChange={(e) => setNewItemForm({ ...newItemForm, selectedPOS: e.target.value as string[] })}
-                                disabled={!newItemForm.selectedWebsite || posOptions.length === 0}
-                                renderValue={(selected) => (
-                                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                    {(selected as string[]).map((pos) => (
-                                      <Chip 
-                                        key={pos} 
-                                        label={pos} 
-                                        size="small"
-                                        sx={{
-                                          backgroundColor: '#F7F4FD',
-                                          color: '#6818A5',
-                                          fontWeight: 600,
-                                          '&:hover': {
-                                            backgroundColor: '#F0E8FF'
-                                          }
-                                        }}
-                                      />
-                                    ))}
-                                  </Box>
-                                )}
-                                sx={{
-                                  borderRadius: 2,
-                                  backgroundColor: '#FFFFFF',
-                                  '& .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#E2E8F0'
-                                  },
-                                  '&:hover .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#6818A5'
-                                  },
-                                  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#6818A5',
-                                    borderWidth: 2
-                                  }
-                                }}
-                              >
-                                {posOptions.map((pos) => (
-                                  <MenuItem 
-                                    key={pos} 
-                                    value={pos}
-                                    sx={{
-                                      '&:hover': {
-                                        backgroundColor: 'rgba(104, 24, 165, 0.08)',
-                                        color: '#6818A5'
-                                      },
-                                      '&.Mui-selected': {
-                                        backgroundColor: 'rgba(104, 24, 165, 0.12)',
-                                        color: '#6818A5',
-                                        '&:hover': {
-                                          backgroundColor: 'rgba(104, 24, 165, 0.16)'
-                                        }
-                                      }
-                                    }}
+                                    <img src={editIcon} alt="Edit" style={{ width: 18, height: 18 }} />
+                                  </ActionButton>
+                                  <ActionButton 
+                                    onClick={() => handleDeleteCollectionItem(search)}
+                                    title="Delete Item"
                                   >
-                                    {pos}
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
-                          </Box>
+                                    <img src={deleteIcon} alt="Delete" style={{ width: 18, height: 18 }} />
+                                  </ActionButton>
+                                </Box>
+                              </TableCell>
+                            </TableRow>
+                            );
+                          })}
+                          {/* Show new items that haven't been saved yet */}
+                          {newItems.map((item, index) => (
+                            <TableRow key={`new-${index}`} sx={{ '&:hover': { backgroundColor: '#F8FAFC' }, backgroundColor: '#F0FDF4' }}>
+                              <TableCell>{editingCollection.searches.length + index + 1}</TableCell>
+                              <TableCell>
+                                <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                                  {item.location}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
+                                  {(() => {
+                                    const checkIn = parseDateString(item.check_in_date);
+                                    const checkOut = parseDateString(item.check_out_date);
+                                    if (!checkIn || !checkOut) return 'Invalid dates';
+                                    return `${format(checkIn, 'MM/dd/yyyy')} to ${format(checkOut, 'MM/dd/yyyy')}`;
+                                  })()}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>{item.adults}</TableCell>
+                              <TableCell>
+                                <StarRatingDisplay rating={item.star_rating} />
+                              </TableCell>
+                              <TableCell>
+                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                  {item.website && (
+                                    <Chip
+                                      label={`${item.website}${item.pos && item.pos.length ? ` (${item.pos.join(', ')})` : ''}`}
+                                      size="small"
+                                      sx={{ 
+                                        fontSize: '0.7rem', 
+                                        height: '20px',
+                                        borderColor: '#E2E8F0',
+                                        color: '#1E293B',
+                                        fontWeight: 600
+                                      }}
+                                    />
+                                  )}
+                                </Box>
+                              </TableCell>
+                              <TableCell>
+                                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                                  <ActionButton 
+                                    onClick={() => handleRemoveNewItem(index)}
+                                    title="Remove Item"
+                                  >
+                                    <img src={deleteIcon} alt="Delete" style={{ width: 18, height: 18 }} />
+                                  </ActionButton>
+                                </Box>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+
+                    <Alert severity="info" sx={{ mt: 2, borderRadius: 2, backgroundColor: '#F7F4FD' }}>
+                      <Typography variant="body2" sx={{ fontFamily: '"Urbanist", sans-serif' }}>
+                        <strong>Note:</strong> You can edit any search item in this collection. Click "Edit" on any item to modify its parameters.
+                      </Typography>
+                    </Alert>
+                  </Box>
+                )}
+
+                {/* Tab Panel 1: Add Items */}
+                {editDialogTab === 1 && (
+                  <Box>
+                    {/* Add Items Tabs (Manual / CSV Upload) */}
+                    <Box sx={{ mb: 3 }}>
+                      <Box sx={{ 
+                        display: 'flex', 
+                        gap: 0,
+                        border: '1px solid #E2E8F0',
+                        borderRadius: 2,
+                        overflow: 'hidden',
+                        backgroundColor: '#FFFFFF'
+                      }}>
+                        {/* Manual Add Tab */}
+                        <Box
+                          onClick={() => setAddItemsTab(0)}
+                          sx={{
+                            flex: 1,
+                            px: 2,
+                            py: 1.5,
+                            cursor: 'pointer',
+                            borderBottom: addItemsTab === 0 ? '3px solid #6818A5' : '3px solid transparent',
+                            backgroundColor: addItemsTab === 0 ? '#F7F4FD' : 'transparent',
+                            transition: 'all 0.2s ease',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 1,
+                            '&:hover': {
+                              backgroundColor: addItemsTab === 0 ? '#F7F4FD' : '#F8FAFC',
+                              borderBottomColor: addItemsTab === 0 ? '#6818A5' : '#CBD5E1',
+                            },
+                          }}
+                        >
+                          <AddIcon 
+                            sx={{ 
+                              fontSize: 18, 
+                              color: addItemsTab === 0 ? '#6818A5' : '#64748B',
+                              transition: 'color 0.2s ease',
+                            }} 
+                          />
+                          <Typography 
+                            variant="subtitle1" 
+                            sx={{ 
+                              fontWeight: addItemsTab === 0 ? 700 : 600, 
+                              color: addItemsTab === 0 ? '#6818A5' : '#64748B',
+                              fontFamily: '"Urbanist", sans-serif',
+                              transition: 'all 0.2s ease',
+                            }}
+                          >
+                            Manual
+                          </Typography>
                         </Box>
 
-                        {/* Location */}
-                        <Box sx={{ display: 'flex', gap: 2 }}>
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>City</Typography>
-                        <TextField
-                          fullWidth
-                          size="small"
-                              value={newItemForm.city}
-                              onChange={(e) => setNewItemForm({ ...newItemForm, city: e.target.value })}
-                              placeholder="Enter city name"
+                        {/* Divider Line */}
+                        <Box
                           sx={{
-                            '& .MuiOutlinedInput-root': {
-                              borderRadius: 2,
-                                  backgroundColor: '#FFFFFF',
-                                  '& fieldset': {
-                                    borderColor: '#E2E8F0'
-                                  },
-                                  '&:hover fieldset': {
-                                    borderColor: '#6818A5'
-                                  },
-                                  '&.Mui-focused fieldset': {
-                                    borderColor: '#6818A5',
-                                    borderWidth: 2
-                                  }
-                                }
+                            width: '1px',
+                            backgroundColor: '#E2E8F0',
+                            my: 1
                           }}
                         />
-                          </Box>
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>Country Code</Typography>
-                            <FormControl fullWidth size="small">
-                              <Select
-                                value={newItemForm.countryCode}
-                                onChange={(e) => setNewItemForm({ ...newItemForm, countryCode: e.target.value })}
-                                displayEmpty
-                                sx={{
-                                  borderRadius: 2,
-                                  backgroundColor: '#FFFFFF',
-                                  '& .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#E2E8F0'
-                                  },
-                                  '&:hover .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#6818A5'
-                                  },
-                                  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#6818A5',
-                                    borderWidth: 2
-                                  }
-                                }}
-                              >
-                                <MenuItem value="" disabled>Select country</MenuItem>
-                                {countryCodes.map((code) => (
-                                  <MenuItem 
-                                    key={code} 
-                                    value={code}
-                                    sx={{
-                                      '&:hover': {
-                                        backgroundColor: 'rgba(104, 24, 165, 0.08)',
-                                        color: '#6818A5'
-                                      },
-                                      '&.Mui-selected': {
-                                        backgroundColor: 'rgba(104, 24, 165, 0.12)',
-                                        color: '#6818A5',
-                                        '&:hover': {
-                                          backgroundColor: 'rgba(104, 24, 165, 0.16)'
-                                        }
-                                      }
-                                    }}
-                                  >
-                                    {code}
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
-                          </Box>
-                  </Box>
 
-                        {/* Dates */}
-                        <Box sx={{ display: 'flex', gap: 2 }}>
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>Check-in Date</Typography>
-                    <LocalizationProvider dateAdapter={AdapterDateFns}>
-                      <DatePicker
-                                value={newItemForm.checkInDate}
-                                onChange={(date) => setNewItemForm({ ...newItemForm, checkInDate: date })}
-                                minDate={startOfToday()}
-                        slotProps={{
-                          textField: { 
-                            fullWidth: true,
-                            size: 'small',
-                            sx: {
-                              '& .MuiOutlinedInput-root': {
-                                borderRadius: 2,
-                                        backgroundColor: '#FFFFFF',
-                                        '& fieldset': {
-                                          borderColor: '#E2E8F0'
-                                        },
-                                        '&:hover fieldset': {
-                                          borderColor: '#6818A5'
-                                        },
-                                        '&.Mui-focused fieldset': {
-                                          borderColor: '#6818A5',
-                                          borderWidth: 2
-                                        }
-                                      }
-                            }
-                          }
-                        }}
-                      />
-                    </LocalizationProvider>
-                          </Box>
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>Check-out Date</Typography>
-                            <LocalizationProvider dateAdapter={AdapterDateFns}>
-                              <DatePicker
-                                value={newItemForm.checkOutDate}
-                                onChange={(date) => setNewItemForm({ ...newItemForm, checkOutDate: date })}
-                                minDate={newItemForm.checkInDate || startOfToday()}
-                                slotProps={{ 
-                                  textField: { 
-                                    fullWidth: true, 
-                                    size: 'small',
-                                    sx: {
-                                      '& .MuiOutlinedInput-root': {
-                                        borderRadius: 2,
-                                        backgroundColor: '#FFFFFF',
-                                        '& fieldset': {
-                                          borderColor: '#E2E8F0'
-                                        },
-                                        '&:hover fieldset': {
-                                          borderColor: '#6818A5'
-                                        },
-                                        '&.Mui-focused fieldset': {
-                                          borderColor: '#6818A5',
-                                          borderWidth: 2
-                                        }
-                                      }
-                                    }
-                                  } 
-                                }}
-                              />
-                            </LocalizationProvider>
-                          </Box>
-                  </Box>
+                        {/* CSV Upload Tab */}
+                        <Box
+                          onClick={() => setAddItemsTab(1)}
+                          sx={{
+                            flex: 1,
+                            px: 2,
+                            py: 1.5,
+                            cursor: 'pointer',
+                            borderBottom: addItemsTab === 1 ? '3px solid #6818A5' : '3px solid transparent',
+                            backgroundColor: addItemsTab === 1 ? '#F7F4FD' : 'transparent',
+                            transition: 'all 0.2s ease',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 1,
+                            '&:hover': {
+                              backgroundColor: addItemsTab === 1 ? '#F7F4FD' : '#F8FAFC',
+                              borderBottomColor: addItemsTab === 1 ? '#6818A5' : '#CBD5E1',
+                            },
+                          }}
+                        >
+                          <FileUploadIcon 
+                            sx={{ 
+                              fontSize: 18, 
+                              color: addItemsTab === 1 ? '#6818A5' : '#64748B',
+                              transition: 'color 0.2s ease',
+                            }} 
+                          />
+                          <Typography 
+                            variant="subtitle1" 
+                            sx={{ 
+                              fontWeight: addItemsTab === 1 ? 700 : 600, 
+                              color: addItemsTab === 1 ? '#6818A5' : '#64748B',
+                              fontFamily: '"Urbanist", sans-serif',
+                              transition: 'all 0.2s ease',
+                            }}
+                          >
+                            CSV Upload
+                          </Typography>
+                        </Box>
+                      </Box>
+                    </Box>
 
-                        {/* Adults and Star Rating */}
-                        <Box sx={{ display: 'flex', gap: 2 }}>
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>Adults</Typography>
-                    <FormControl fullWidth size="small">
-                      <Select
-                                value={newItemForm.adults}
-                                onChange={(e) => setNewItemForm({ ...newItemForm, adults: Number(e.target.value) })}
-                        sx={{
-                          borderRadius: 2,
-                                  backgroundColor: '#FFFFFF',
-                                  '& .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#E2E8F0'
-                                  },
-                                  '&:hover .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#6818A5'
-                                  },
-                                  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#6818A5',
-                                    borderWidth: 2
-                                  }
-                        }}
-                      >
-                        {[1, 2, 3, 4, 5, 6].map((num) => (
-                                  <MenuItem 
-                                    key={num} 
-                                    value={num}
-                                    sx={{
-                                      '&:hover': {
-                                        backgroundColor: 'rgba(104, 24, 165, 0.08)',
-                                        color: '#6818A5'
-                                      },
-                                      '&.Mui-selected': {
-                                        backgroundColor: 'rgba(104, 24, 165, 0.12)',
-                                        color: '#6818A5',
-                                        '&:hover': {
-                                          backgroundColor: 'rgba(104, 24, 165, 0.16)'
-                                        }
-                                      }
-                                    }}
-                                  >
-                                    {num}
-                                  </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                          </Box>
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>Star Rating</Typography>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    {/* Manual Add Tab */}
+                    {addItemsTab === 0 && (
+                      <Paper sx={{ p: 3, backgroundColor: '#F8FAFC', borderRadius: 2, border: '1px solid #E2E8F0' }}>
+                        <Typography variant="h6" sx={{ mb: 3, fontWeight: 800, color: '#0F172A', fontFamily: '"Urbanist", sans-serif' }}>
+                          Add New Search Item
+                        </Typography>
+                        
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
+                          {/* Website and POS */}
+                          <Box sx={{ display: 'flex', gap: 2 }}>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>Website</Typography>
                               <FormControl fullWidth size="small">
                                 <Select
-                                  value={newItemForm.starRating}
-                                  onChange={(e) => setNewItemForm({ ...newItemForm, starRating: Number(e.target.value) })}
+                                  value={newItemForm.selectedWebsite?.name || ''}
+                                  onChange={(e) => {
+                                    const siteName = e.target.value;
+                                    setNewItemForm({
+                                      ...newItemForm,
+                                      selectedWebsite: siteName ? { name: siteName } : null,
+                                      selectedPOS: []
+                                    });
+                                  }}
+                                  displayEmpty
+                                  sx={{ 
+                                    borderRadius: 2,
+                                    backgroundColor: '#FFFFFF',
+                                    '& .MuiOutlinedInput-notchedOutline': {
+                                      borderColor: '#E2E8F0'
+                                    },
+                                    '&:hover .MuiOutlinedInput-notchedOutline': {
+                                      borderColor: '#6818A5'
+                                    },
+                                    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                                      borderColor: '#6818A5',
+                                      borderWidth: 2
+                                    },
+                                    '& .MuiSelect-select': {
+                                      '&:hover': {
+                                        backgroundColor: 'rgba(104, 24, 165, 0.04)'
+                                      }
+                                    }
+                                  }}
+                                >
+                                  <MenuItem value="" disabled>Select website</MenuItem>
+                                  {sites.map((site) => (
+                                    <MenuItem 
+                                      key={site.code} 
+                                      value={site.name}
+                                      sx={{
+                                        '&:hover': {
+                                          backgroundColor: 'rgba(104, 24, 165, 0.08)',
+                                          color: '#6818A5'
+                                        },
+                                        '&.Mui-selected': {
+                                          backgroundColor: 'rgba(104, 24, 165, 0.12)',
+                                          color: '#6818A5',
+                                          '&:hover': {
+                                            backgroundColor: 'rgba(104, 24, 165, 0.16)'
+                                          }
+                                        }
+                                      }}
+                                    >
+                                      {site.name}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                            </Box>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>POS (Optional)</Typography>
+                              <FormControl fullWidth size="small">
+                                <Select
+                                  multiple
+                                  value={newItemForm.selectedPOS}
+                                  onChange={(e) => setNewItemForm({ ...newItemForm, selectedPOS: e.target.value as string[] })}
+                                  disabled={!newItemForm.selectedWebsite || posOptions.length === 0}
+                                  renderValue={(selected) => (
+                                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                      {(selected as string[]).map((pos) => (
+                                        <Chip 
+                                          key={pos} 
+                                          label={pos} 
+                                          size="small"
+                                          sx={{
+                                            backgroundColor: '#F7F4FD',
+                                            color: '#6818A5',
+                                            fontWeight: 600,
+                                            '&:hover': {
+                                              backgroundColor: '#F0E8FF'
+                                            }
+                                          }}
+                                        />
+                                      ))}
+                                    </Box>
+                                  )}
                                   sx={{
                                     borderRadius: 2,
                                     backgroundColor: '#FFFFFF',
@@ -2210,10 +2313,10 @@ const MyCollections: React.FC = () => {
                                     }
                                   }}
                                 >
-                                  {[1, 2, 3, 4, 5].map((stars) => (
+                                  {posOptions.map((pos) => (
                                     <MenuItem 
-                                      key={stars} 
-                                      value={stars}
+                                      key={pos} 
+                                      value={pos}
                                       sx={{
                                         '&:hover': {
                                           backgroundColor: 'rgba(104, 24, 165, 0.08)',
@@ -2228,48 +2331,507 @@ const MyCollections: React.FC = () => {
                                         }
                                       }}
                                     >
-                                      {stars}
+                                      {pos}
                                     </MenuItem>
                                   ))}
                                 </Select>
                               </FormControl>
-                              <FormControlLabel
-                                control={
-                                  <Checkbox
-                                    checked={newItemForm.starRatingOrMore}
-                                    onChange={(e) => setNewItemForm({ ...newItemForm, starRatingOrMore: e.target.checked })}
-                                    sx={{
-                                      color: '#6818A5',
-                                      '&.Mui-checked': {
-                                        color: '#6818A5'
-                                      },
-                                      '&:hover': {
-                                        backgroundColor: 'rgba(104, 24, 165, 0.04)'
-                                      }
-                                    }}
-                                  />
-                                }
-                                label="or more"
+                            </Box>
+                          </Box>
+
+                          {/* Location */}
+                          <Box sx={{ display: 'flex', gap: 2 }}>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>City</Typography>
+                              <TextField
+                                fullWidth
+                                size="small"
+                                value={newItemForm.city}
+                                onChange={(e) => setNewItemForm({ ...newItemForm, city: e.target.value })}
+                                placeholder="Enter city name"
                                 sx={{
-                                  '& .MuiFormControlLabel-label': {
-                                    fontWeight: 600,
-                                    color: '#1E293B'
+                                  '& .MuiOutlinedInput-root': {
+                                    borderRadius: 2,
+                                    backgroundColor: '#FFFFFF',
+                                    '& fieldset': {
+                                      borderColor: '#E2E8F0'
+                                    },
+                                    '&:hover fieldset': {
+                                      borderColor: '#6818A5'
+                                    },
+                                    '&.Mui-focused fieldset': {
+                                      borderColor: '#6818A5',
+                                      borderWidth: 2
+                                    }
                                   }
                                 }}
                               />
                             </Box>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>Country Code</Typography>
+                              <FormControl fullWidth size="small">
+                                <Select
+                                  value={newItemForm.countryCode}
+                                  onChange={(e) => setNewItemForm({ ...newItemForm, countryCode: e.target.value })}
+                                  displayEmpty
+                                  sx={{
+                                    borderRadius: 2,
+                                    backgroundColor: '#FFFFFF',
+                                    '& .MuiOutlinedInput-notchedOutline': {
+                                      borderColor: '#E2E8F0'
+                                    },
+                                    '&:hover .MuiOutlinedInput-notchedOutline': {
+                                      borderColor: '#6818A5'
+                                    },
+                                    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                                      borderColor: '#6818A5',
+                                      borderWidth: 2
+                                    }
+                                  }}
+                                >
+                                  <MenuItem value="" disabled>Select country</MenuItem>
+                                  {countryCodes.map((code) => (
+                                    <MenuItem 
+                                      key={code} 
+                                      value={code}
+                                      sx={{
+                                        '&:hover': {
+                                          backgroundColor: 'rgba(104, 24, 165, 0.08)',
+                                          color: '#6818A5'
+                                        },
+                                        '&.Mui-selected': {
+                                          backgroundColor: 'rgba(104, 24, 165, 0.12)',
+                                          color: '#6818A5',
+                                          '&:hover': {
+                                            backgroundColor: 'rgba(104, 24, 165, 0.16)'
+                                          }
+                                        }
+                                      }}
+                                    >
+                                      {code}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                            </Box>
                           </Box>
-                  </Box>
 
+                          {/* Dates */}
+                          <Box sx={{ display: 'flex', gap: 2 }}>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>Check-in Date</Typography>
+                              <LocalizationProvider dateAdapter={AdapterDateFns}>
+                                <DatePicker
+                                  value={newItemForm.checkInDate}
+                                  onChange={(date) => setNewItemForm({ ...newItemForm, checkInDate: date })}
+                                  minDate={startOfToday()}
+                                  slotProps={{
+                                    textField: { 
+                                      fullWidth: true,
+                                      size: 'small',
+                                      sx: {
+                                        '& .MuiOutlinedInput-root': {
+                                          borderRadius: 2,
+                                          backgroundColor: '#FFFFFF',
+                                          '& fieldset': {
+                                            borderColor: '#E2E8F0'
+                                          },
+                                          '&:hover fieldset': {
+                                            borderColor: '#6818A5'
+                                          },
+                                          '&.Mui-focused fieldset': {
+                                            borderColor: '#6818A5',
+                                            borderWidth: 2
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }}
+                                />
+                              </LocalizationProvider>
+                            </Box>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>Check-out Date</Typography>
+                              <LocalizationProvider dateAdapter={AdapterDateFns}>
+                                <DatePicker
+                                  value={newItemForm.checkOutDate}
+                                  onChange={(date) => setNewItemForm({ ...newItemForm, checkOutDate: date })}
+                                  minDate={newItemForm.checkInDate || startOfToday()}
+                                  slotProps={{ 
+                                    textField: { 
+                                      fullWidth: true, 
+                                      size: 'small',
+                                      sx: {
+                                        '& .MuiOutlinedInput-root': {
+                                          borderRadius: 2,
+                                          backgroundColor: '#FFFFFF',
+                                          '& fieldset': {
+                                            borderColor: '#E2E8F0'
+                                          },
+                                          '&:hover fieldset': {
+                                            borderColor: '#6818A5'
+                                          },
+                                          '&.Mui-focused fieldset': {
+                                            borderColor: '#6818A5',
+                                            borderWidth: 2
+                                          }
+                                        }
+                                      }
+                                    } 
+                                  }}
+                                />
+                              </LocalizationProvider>
+                            </Box>
+                          </Box>
+
+                          {/* Adults and Star Rating */}
+                          <Box sx={{ display: 'flex', gap: 2 }}>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>Adults</Typography>
+                              <FormControl fullWidth size="small">
+                                <Select
+                                  value={newItemForm.adults}
+                                  onChange={(e) => setNewItemForm({ ...newItemForm, adults: Number(e.target.value) })}
+                                  sx={{
+                                    borderRadius: 2,
+                                    backgroundColor: '#FFFFFF',
+                                    '& .MuiOutlinedInput-notchedOutline': {
+                                      borderColor: '#E2E8F0'
+                                    },
+                                    '&:hover .MuiOutlinedInput-notchedOutline': {
+                                      borderColor: '#6818A5'
+                                    },
+                                    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                                      borderColor: '#6818A5',
+                                      borderWidth: 2
+                                    }
+                                  }}
+                                >
+                                  {[1, 2, 3, 4, 5, 6].map((num) => (
+                                    <MenuItem 
+                                      key={num} 
+                                      value={num}
+                                      sx={{
+                                        '&:hover': {
+                                          backgroundColor: 'rgba(104, 24, 165, 0.08)',
+                                          color: '#6818A5'
+                                        },
+                                        '&.Mui-selected': {
+                                          backgroundColor: 'rgba(104, 24, 165, 0.12)',
+                                          color: '#6818A5',
+                                          '&:hover': {
+                                            backgroundColor: 'rgba(104, 24, 165, 0.16)'
+                                          }
+                                        }
+                                      }}
+                                    >
+                                      {num}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                            </Box>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>Star Rating</Typography>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <FormControl fullWidth size="small">
+                                  <Select
+                                    value={newItemForm.starRating}
+                                    onChange={(e) => setNewItemForm({ ...newItemForm, starRating: Number(e.target.value) })}
+                                    sx={{
+                                      borderRadius: 2,
+                                      backgroundColor: '#FFFFFF',
+                                      '& .MuiOutlinedInput-notchedOutline': {
+                                        borderColor: '#E2E8F0'
+                                      },
+                                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                                        borderColor: '#6818A5'
+                                      },
+                                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                                        borderColor: '#6818A5',
+                                        borderWidth: 2
+                                      }
+                                    }}
+                                  >
+                                    {[1, 2, 3, 4, 5].map((stars) => (
+                                      <MenuItem 
+                                        key={stars} 
+                                        value={stars}
+                                        sx={{
+                                          '&:hover': {
+                                            backgroundColor: 'rgba(104, 24, 165, 0.08)',
+                                            color: '#6818A5'
+                                          },
+                                          '&.Mui-selected': {
+                                            backgroundColor: 'rgba(104, 24, 165, 0.12)',
+                                            color: '#6818A5',
+                                            '&:hover': {
+                                              backgroundColor: 'rgba(104, 24, 165, 0.16)'
+                                            }
+                                          }
+                                        }}
+                                      >
+                                        {stars}
+                                      </MenuItem>
+                                    ))}
+                                  </Select>
+                                </FormControl>
+                                <FormControlLabel
+                                  control={
+                                    <Checkbox
+                                      checked={newItemForm.starRatingOrMore}
+                                      onChange={(e) => setNewItemForm({ ...newItemForm, starRatingOrMore: e.target.checked })}
+                                      sx={{
+                                        color: '#6818A5',
+                                        '&.Mui-checked': {
+                                          color: '#6818A5'
+                                        },
+                                        '&:hover': {
+                                          backgroundColor: 'rgba(104, 24, 165, 0.04)'
+                                        }
+                                      }}
+                                    />
+                                  }
+                                  label="or more"
+                                  sx={{
+                                    '& .MuiFormControlLabel-label': {
+                                      fontWeight: 600,
+                                      color: '#1E293B'
+                                    }
+                                  }}
+                                />
+                              </Box>
+                            </Box>
+                          </Box>
+
+                          <Button
+                            variant="contained"
+                            startIcon={<AddIcon />}
+                            onClick={handleAddNewItem}
+                            disabled={!validateNewItem()}
+                            sx={{ 
+                              backgroundColor: '#6818A5', 
+                              borderRadius: 2,
+                              py: 1.5,
+                              fontWeight: 600,
+                              textTransform: 'none',
+                              boxShadow: '0 2px 8px rgba(104, 24, 165, 0.3)',
+                              '&:hover': { 
+                                backgroundColor: '#5a1594',
+                                boxShadow: '0 4px 12px rgba(104, 24, 165, 0.4)',
+                                transform: 'translateY(-1px)'
+                              },
+                              '&:disabled': {
+                                backgroundColor: '#94A3B8',
+                                boxShadow: 'none'
+                              },
+                              transition: 'all 0.2s ease-in-out'
+                            }}
+                          >
+                            Add Item
+                          </Button>
+                        </Box>
+
+                        {/* Preview of new items */}
+                        {newItems.length > 0 && (
+                          <Box sx={{ mt: 3 }}>
+                            <Typography variant="h6" sx={{ mb: 2, fontWeight: 800, color: '#0F172A', fontFamily: '"Urbanist", sans-serif' }}>
+                              Items to Add ({newItems.length})
+                            </Typography>
+                            <TableContainer component={Paper} sx={{ borderRadius: 2, border: '1px solid #E2E8F0', overflow: 'hidden' }}>
+                              <Table size="small">
+                                <TableHead>
+                                  <TableRow sx={{ backgroundColor: '#F7F4FD' }}>
+                                    <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Location</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Dates</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Adults</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Star Rating</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Website</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Actions</TableCell>
+                                  </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                  {newItems.map((item, index) => (
+                                    <TableRow 
+                                      key={index}
+                                      sx={{
+                                        '&:hover': {
+                                          backgroundColor: 'rgba(104, 24, 165, 0.04)'
+                                        },
+                                        '&:last-child td': {
+                                          borderBottom: 'none'
+                                        }
+                                      }}
+                                    >
+                                      <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{item.location}</TableCell>
+                                      <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{item.check_in_date} to {item.check_out_date}</TableCell>
+                                      <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{item.adults}</TableCell>
+                                      <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>
+                                        <StarRatingDisplay rating={item.star_rating} />
+                                      </TableCell>
+                                      <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>
+                                        {item.website}{item.pos?.length ? ` (${item.pos.join(', ')})` : ''}
+                                      </TableCell>
+                                      <TableCell>
+                                        <IconButton 
+                                          size="small"
+                                          onClick={() => handleRemoveNewItem(index)}
+                                          sx={{
+                                            color: '#EF4444',
+                                            '&:hover': {
+                                              backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                                              color: '#DC2626'
+                                            }
+                                          }}
+                                        >
+                                          <img src={deleteIcon} alt="Delete" style={{ width: 18, height: 18 }} />
+                                        </IconButton>
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </TableContainer>
+                          </Box>
+                        )}
+                      </Paper>
+                    )}
+
+                    {/* CSV Upload Tab */}
+                    {addItemsTab === 1 && (
+                      <Paper sx={{ p: 3, backgroundColor: '#F8FAFC', borderRadius: 2, border: '1px solid #E2E8F0' }}>
+                        <Typography variant="h6" sx={{ mb: 2, fontWeight: 800, color: '#0F172A', fontFamily: '"Urbanist", sans-serif' }}>
+                          Upload CSV File
+                        </Typography>
+                        <Alert 
+                          severity="info" 
+                          sx={{ 
+                            mb: 3,
+                            borderRadius: 2,
+                            backgroundColor: '#EFF6FF',
+                            border: '1px solid #BFDBFE',
+                            '& .MuiAlert-icon': {
+                              color: '#3B82F6'
+                            },
+                            '& .MuiAlert-message': {
+                              color: '#1E40AF',
+                              fontWeight: 600
+                            }
+                          }}
+                        >
+                          CSV format: Site, City, Country, CheckIn (YYYYMMDD), CheckOut (YYYYMMDD), StarRating, Adults [, POS]
+                        </Alert>
+                        <input
+                          accept=".csv"
+                          style={{ display: 'none' }}
+                          id="csv-upload-edit"
+                          type="file"
+                          onChange={handleCSVUpload}
+                        />
+                        <label htmlFor="csv-upload-edit">
+                          <Button
+                            variant="outlined"
+                            component="span"
+                            startIcon={<CloudUploadIcon />}
+                            sx={{
+                              borderColor: '#6818A5',
+                              color: '#6818A5',
+                              borderRadius: 2,
+                              py: 1.5,
+                              px: 3,
+                              fontWeight: 600,
+                              textTransform: 'none',
+                              backgroundColor: '#FFFFFF',
+                              boxShadow: '0 2px 4px rgba(104, 24, 165, 0.1)',
+                              '&:hover': { 
+                                borderColor: '#5a1594',
+                                backgroundColor: '#F7F4FD',
+                                boxShadow: '0 4px 8px rgba(104, 24, 165, 0.2)',
+                                transform: 'translateY(-1px)'
+                              },
+                              transition: 'all 0.2s ease-in-out'
+                            }}
+                          >
+                            Upload CSV File
+                          </Button>
+                        </label>
+
+                        {/* Preview of new items from CSV */}
+                        {newItems.length > 0 && (
+                          <Box sx={{ mt: 3 }}>
+                            <Typography variant="h6" sx={{ mb: 2, fontWeight: 800, color: '#0F172A', fontFamily: '"Urbanist", sans-serif' }}>
+                              Items to Add ({newItems.length})
+                            </Typography>
+                            <TableContainer component={Paper} sx={{ borderRadius: 2, border: '1px solid #E2E8F0', overflow: 'hidden' }}>
+                              <Table size="small">
+                                <TableHead>
+                                  <TableRow sx={{ backgroundColor: '#F7F4FD' }}>
+                                    <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Location</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Dates</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Adults</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Star Rating</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Website</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Actions</TableCell>
+                                  </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                  {newItems.map((item, index) => (
+                                    <TableRow 
+                                      key={index}
+                                      sx={{
+                                        '&:hover': {
+                                          backgroundColor: 'rgba(104, 24, 165, 0.04)'
+                                        },
+                                        '&:last-child td': {
+                                          borderBottom: 'none'
+                                        }
+                                      }}
+                                    >
+                                      <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{item.location}</TableCell>
+                                      <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{item.check_in_date} to {item.check_out_date}</TableCell>
+                                      <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{item.adults}</TableCell>
+                                      <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>
+                                        <StarRatingDisplay rating={item.star_rating} />
+                                      </TableCell>
+                                      <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>
+                                        {item.website}{item.pos?.length ? ` (${item.pos.join(', ')})` : ''}
+                                      </TableCell>
+                                      <TableCell>
+                                        <IconButton 
+                                          size="small" 
+                                          onClick={() => handleRemoveNewItem(index)}
+                                          sx={{
+                                            color: '#EF4444',
+                                            '&:hover': {
+                                              backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                                              color: '#DC2626'
+                                            }
+                                          }}
+                                        >
+                                          <img src={deleteIcon} alt="Delete" style={{ width: 18, height: 18 }} />
+                                        </IconButton>
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </TableContainer>
+                          </Box>
+                        )}
+                      </Paper>
+                    )}
+
+                    {/* Add Items Button */}
+                    {newItems.length > 0 && (
+                      <Box sx={{ mt: 3, display: 'flex', justifyContent: 'flex-end' }}>
                         <Button
                           variant="contained"
-                          startIcon={<AddIcon />}
-                          onClick={handleAddNewItem}
-                          disabled={!validateNewItem()}
+                          onClick={handleAddItemsToCollection}
                           sx={{ 
-                            backgroundColor: '#6818A5', 
+                            backgroundColor: '#6818A5',
                             borderRadius: 2,
                             py: 1.5,
+                            px: 4,
                             fontWeight: 600,
                             textTransform: 'none',
                             boxShadow: '0 2px 8px rgba(104, 24, 165, 0.3)',
@@ -2278,261 +2840,640 @@ const MyCollections: React.FC = () => {
                               boxShadow: '0 4px 12px rgba(104, 24, 165, 0.4)',
                               transform: 'translateY(-1px)'
                             },
-                            '&:disabled': {
-                              backgroundColor: '#94A3B8',
-                              boxShadow: 'none'
-                            },
                             transition: 'all 0.2s ease-in-out'
                           }}
                         >
-                          Add Item
+                          Add {newItems.length} Item(s) to Collection
                         </Button>
                       </Box>
+                    )}
+                  </Box>
+                )}
+              </Box>
 
-                      {/* Preview of new items */}
-                      {newItems.length > 0 && (
-                        <Box sx={{ mt: 3 }}>
-                          <Typography variant="h6" sx={{ mb: 2, fontWeight: 800, color: '#0F172A', fontFamily: '"Urbanist", sans-serif' }}>
-                            Items to Add ({newItems.length})
-                    </Typography>
-                          <TableContainer component={Paper} sx={{ borderRadius: 2, border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-                            <Table size="small">
-                              <TableHead>
-                                <TableRow sx={{ backgroundColor: '#F7F4FD' }}>
-                                  <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Location</TableCell>
-                                  <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Dates</TableCell>
-                                  <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Adults</TableCell>
-                                  <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Star Rating</TableCell>
-                                  <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Website</TableCell>
-                                  <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Actions</TableCell>
-                                </TableRow>
-                              </TableHead>
-                              <TableBody>
-                                {newItems.map((item, index) => (
-                                  <TableRow 
-                                    key={index}
-                                    sx={{
-                                      '&:hover': {
-                                        backgroundColor: 'rgba(104, 24, 165, 0.04)'
-                                      },
-                                      '&:last-child td': {
-                                        borderBottom: 'none'
-                                      }
-                                    }}
-                                  >
-                                    <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{item.location}</TableCell>
-                                    <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{item.check_in_date} to {item.check_out_date}</TableCell>
-                                    <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{item.adults}</TableCell>
-                                    <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>
-                                      <StarRatingDisplay rating={item.star_rating} />
-                                    </TableCell>
-                                    <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>
-                                      {item.website}{item.pos?.length ? ` (${item.pos.join(', ')})` : ''}
-                                    </TableCell>
-                                    <TableCell>
-                                      <IconButton 
-                          size="small"
-                                        onClick={() => handleRemoveNewItem(index)}
-                                        sx={{
-                                          color: '#EF4444',
-                                          '&:hover': {
-                                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                                            color: '#DC2626'
-                                          }
-                                        }}
-                                      >
-                                        <img src={deleteIcon} alt="Delete" style={{ width: 18, height: 18 }} />
-                                      </IconButton>
-                                    </TableCell>
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-                          </TableContainer>
-                        </Box>
-                      )}
-                    </Paper>
-                  )}
+              {/* Edit Form Panel - Right Side */}
+              <Box sx={{ 
+                width: '50%',
+                height: '100%',
+                overflow: 'auto',
+                p: 3,
+                flexShrink: 0
+              }}>
+                {editingItem && (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
+                  {/* Back Button */}
+                  <Button
+                    startIcon={<ArrowBack />}
+                    onClick={() => {
+                      setIsEditingItemInDialog(false);
+                      setEditingItem(null);
+                    }}
+                    sx={{
+                      alignSelf: 'flex-start',
+                      color: '#6818A5',
+                      fontWeight: 600,
+                      textTransform: 'none',
+                      '&:hover': {
+                        backgroundColor: '#F7F4FD'
+                      }
+                    }}
+                  >
+                    Back to Items
+                  </Button>
 
-                  {/* CSV Upload Tab */}
-                  {addItemsTab === 1 && (
-                    <Paper sx={{ p: 3, backgroundColor: '#F8FAFC', borderRadius: 2, border: '1px solid #E2E8F0' }}>
-                      <Typography variant="h6" sx={{ mb: 2, fontWeight: 800, color: '#0F172A', fontFamily: '"Urbanist", sans-serif' }}>
-                        Upload CSV File
+                  {/* Edit Form Content */}
+                  {/* Website and POS Selection - Same Level */}
+                  <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="subtitle1" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>
+                        Select Hotel Website
                       </Typography>
-                      <Alert 
-                        severity="info" 
-                        sx={{ 
-                          mb: 3,
-                          borderRadius: 2,
-                          backgroundColor: '#EFF6FF',
-                          border: '1px solid #BFDBFE',
-                          '& .MuiAlert-icon': {
-                            color: '#3B82F6'
-                          },
-                          '& .MuiAlert-message': {
-                            color: '#1E40AF',
-                            fontWeight: 600
-                          }
-                        }}
-                      >
-                        CSV format: Site, City, Country, CheckIn (YYYYMMDD), CheckOut (YYYYMMDD), StarRating, Adults [, POS]
-                      </Alert>
-                      <input
-                        accept=".csv"
-                        style={{ display: 'none' }}
-                        id="csv-upload-edit"
-                        type="file"
-                        onChange={handleCSVUpload}
-                      />
-                      <label htmlFor="csv-upload-edit">
-                        <Button
-                          variant="outlined"
-                          component="span"
-                          startIcon={<CloudUploadIcon />}
+                      <FormControl fullWidth>
+                        <Select
+                          value={editFormData.selectedWebsites.length > 0 ? editFormData.selectedWebsites[0].code : ''}
+                          onChange={(e) => {
+                            const siteCode = e.target.value;
+                            const website = sites.find(w => w.code === siteCode);
+                            if (website) {
+                              setEditFormData({
+                                ...editFormData,
+                                selectedWebsites: [website],
+                                posMapping: { [website.code]: editFormData.posMapping[website.code] || [] }
+                              });
+                              // Fetch POS options for the selected website
+                              axios.get(`${API_BASE_URL}/pos`, { params: { site_name: website.name } })
+                                .then(res => setEditItemPosOptions(res.data.pos || []))
+                                .catch(() => setEditItemPosOptions([]));
+                            } else {
+                              setEditFormData({
+                                ...editFormData,
+                                selectedWebsites: [],
+                                posMapping: {}
+                              });
+                              setEditItemPosOptions([]);
+                            }
+                          }}
+                          displayEmpty
+                          disabled={sites.length === 0}
                           sx={{
-                            borderColor: '#6818A5',
-                            color: '#6818A5',
+                            '& .MuiOutlinedInput-root': { height: '48px' },
                             borderRadius: 2,
-                            py: 1.5,
-                            px: 3,
-                            fontWeight: 600,
-                            textTransform: 'none',
                             backgroundColor: '#FFFFFF',
-                            boxShadow: '0 2px 4px rgba(104, 24, 165, 0.1)',
-                            '&:hover': { 
-                              borderColor: '#5a1594',
-                              backgroundColor: '#F7F4FD',
-                              boxShadow: '0 4px 8px rgba(104, 24, 165, 0.2)',
-                              transform: 'translateY(-1px)'
+                            '& .MuiOutlinedInput-notchedOutline': {
+                              borderColor: '#E2E8F0'
                             },
-                            transition: 'all 0.2s ease-in-out'
+                            '&:hover .MuiOutlinedInput-notchedOutline': {
+                              borderColor: '#6818A5'
+                            },
+                            '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                              borderColor: '#6818A5',
+                              borderWidth: 2
+                            }
                           }}
                         >
-                          Upload CSV File
-                        </Button>
-                      </label>
-
-                      {/* Preview of new items from CSV */}
-                      {newItems.length > 0 && (
-                        <Box sx={{ mt: 3 }}>
-                          <Typography variant="h6" sx={{ mb: 2, fontWeight: 800, color: '#0F172A', fontFamily: '"Urbanist", sans-serif' }}>
-                            Items to Add ({newItems.length})
-                          </Typography>
-                          <TableContainer component={Paper} sx={{ borderRadius: 2, border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-                            <Table size="small">
-                              <TableHead>
-                                <TableRow sx={{ backgroundColor: '#F7F4FD' }}>
-                                  <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Location</TableCell>
-                                  <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Dates</TableCell>
-                                  <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Adults</TableCell>
-                                  <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Star Rating</TableCell>
-                                  <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Website</TableCell>
-                                  <TableCell sx={{ fontWeight: 800, color: '#0F172A' }}>Actions</TableCell>
-                                </TableRow>
-                              </TableHead>
-                              <TableBody>
-                                {newItems.map((item, index) => (
-                                  <TableRow 
-                                    key={index}
-                                    sx={{
-                                      '&:hover': {
-                                        backgroundColor: 'rgba(104, 24, 165, 0.04)'
-                                      },
-                                      '&:last-child td': {
-                                        borderBottom: 'none'
-                                      }
-                                    }}
-                                  >
-                                    <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{item.location}</TableCell>
-                                    <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{item.check_in_date} to {item.check_out_date}</TableCell>
-                                    <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>{item.adults}</TableCell>
-                                    <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>
-                                      <StarRatingDisplay rating={item.star_rating} />
-                                    </TableCell>
-                                    <TableCell sx={{ fontWeight: 600, color: '#1E293B' }}>
-                                      {item.website}{item.pos?.length ? ` (${item.pos.join(', ')})` : ''}
-                                    </TableCell>
-                                    <TableCell>
-                                      <IconButton 
-                                        size="small" 
-                                        onClick={() => handleRemoveNewItem(index)}
-                                        sx={{
-                                          color: '#EF4444',
-                                          '&:hover': {
-                                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                                            color: '#DC2626'
-                                          }
-                                        }}
-                                      >
-                                        <img src={deleteIcon} alt="Delete" style={{ width: 18, height: 18 }} />
-                                      </IconButton>
-                                    </TableCell>
-                                  </TableRow>
-                      ))}
-                              </TableBody>
-                            </Table>
-                          </TableContainer>
+                          <MenuItem value="" disabled>
+                            {sites.length === 0 ? 'No sites available' : 'Select a website'}
+                          </MenuItem>
+                          {sites.map((website) => (
+                            <MenuItem 
+                              key={website.code} 
+                              value={website.code}
+                              sx={{
+                                '&:hover': {
+                                  backgroundColor: 'rgba(104, 24, 165, 0.08)',
+                                  color: '#6818A5'
+                                },
+                                '&.Mui-selected': {
+                                  backgroundColor: 'rgba(104, 24, 165, 0.12)',
+                                  color: '#6818A5',
+                                  '&:hover': {
+                                    backgroundColor: 'rgba(104, 24, 165, 0.16)'
+                                  }
+                                }
+                              }}
+                            >
+                              {website.name}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
                     </Box>
-                      )}
-                    </Paper>
-                  )}
 
-                  {/* Add Items Button */}
-                  {newItems.length > 0 && (
-                    <Box sx={{ mt: 3, display: 'flex', justifyContent: 'flex-end' }}>
-                      <Button
-                        variant="contained"
-                        onClick={handleAddItemsToCollection}
-                        disabled={addingItems}
-                        sx={{ 
-                          backgroundColor: '#6818A5',
-                          borderRadius: 2,
-                          py: 1.5,
-                          px: 4,
-                          fontWeight: 600,
-                          textTransform: 'none',
-                          boxShadow: '0 2px 8px rgba(104, 24, 165, 0.3)',
-                          '&:hover': { 
-                            backgroundColor: '#5a1594',
-                            boxShadow: '0 4px 12px rgba(104, 24, 165, 0.4)',
-                            transform: 'translateY(-1px)'
-                          },
-                          '&:disabled': {
-                            backgroundColor: '#94A3B8',
-                            boxShadow: 'none'
-                          },
-                          transition: 'all 0.2s ease-in-out'
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="subtitle1" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>
+                        Select POS (Optional)
+                      </Typography>
+                      <FormControl fullWidth>
+                        <Select
+                          multiple
+                          value={editFormData.selectedWebsites.length > 0 ? (editFormData.posMapping[editFormData.selectedWebsites[0].code] || []) : []}
+                          onChange={(e) => {
+                            if (editFormData.selectedWebsites.length > 0) {
+                              const websiteCode = editFormData.selectedWebsites[0].code;
+                              setEditFormData({
+                                ...editFormData,
+                                posMapping: { ...editFormData.posMapping, [websiteCode]: e.target.value as string[] }
+                              });
+                            }
+                          }}
+                          displayEmpty
+                          disabled={editFormData.selectedWebsites.length === 0}
+                          sx={{ 
+                            '& .MuiOutlinedInput-root': { height: '48px' },
+                            borderRadius: 2,
+                            backgroundColor: '#FFFFFF',
+                            '& .MuiOutlinedInput-notchedOutline': {
+                              borderColor: '#E2E8F0'
+                            },
+                            '&:hover .MuiOutlinedInput-notchedOutline': {
+                              borderColor: '#6818A5'
+                            },
+                            '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                              borderColor: '#6818A5',
+                              borderWidth: 2
+                            }
+                          }}
+                          renderValue={(selected) => (
+                            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                              {(selected as string[]).map((pos) => (
+                                <Chip 
+                                  key={pos} 
+                                  label={pos} 
+                                  size="small"
+                                  sx={{
+                                    backgroundColor: '#F7F4FD',
+                                    color: '#6818A5',
+                                    fontWeight: 600,
+                                    '&:hover': {
+                                      backgroundColor: '#F0E8FF'
+                                    }
+                                  }}
+                                />
+                              ))}
+                            </Box>
+                          )}
+                        >
+                          <MenuItem value="" disabled>
+                            {editFormData.selectedWebsites.length === 0 ? 'Select website first' : (editItemPosOptions.length === 0 ? 'No POS available' : 'Select POS')}
+                          </MenuItem>
+                          {editItemPosOptions.map((pos) => (
+                            <MenuItem 
+                              key={pos} 
+                              value={pos}
+                              sx={{
+                                '&:hover': {
+                                  backgroundColor: 'rgba(104, 24, 165, 0.08)',
+                                  color: '#6818A5'
+                                },
+                                '&.Mui-selected': {
+                                  backgroundColor: 'rgba(104, 24, 165, 0.12)',
+                                  color: '#6818A5',
+                                  '&:hover': {
+                                    backgroundColor: 'rgba(104, 24, 165, 0.16)'
+                                  }
+                                }
+                              }}
+                            >
+                              {pos}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    </Box>
+                  </Box>
+
+                  {/* Location */}
+                  <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="subtitle1" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>
+                        City Name
+                      </Typography>
+                      <TextField
+                        value={(() => {
+                          // Extract city name from location (before comma)
+                          const parts = editFormData.location.split(', ');
+                          return parts[0] || editFormData.location;
+                        })()}
+                        onChange={(e) => {
+                          const city = e.target.value.trim();
+                          // Extract existing country code from location if it exists and is valid
+                          const parts = editFormData.location.split(', ');
+                          let existingCountryCode = '';
+                          if (parts.length > 1) {
+                            const code = parts[parts.length - 1].trim();
+                            // Only preserve if it looks like a valid country code (2-3 uppercase letters)
+                            if (code.length >= 2 && code.length <= 3 && /^[A-Z]{2,3}$/.test(code)) {
+                              existingCountryCode = code;
+                            }
+                          }
+                          // Update location: only append country code if it was a valid code
+                          setEditFormData({
+                            ...editFormData,
+                            location: existingCountryCode && city ? `${city}, ${existingCountryCode}` : city
+                          });
+                          if (city) fetchSites();
                         }}
-                      >
-                        {addingItems ? 'Adding...' : `Add ${newItems.length} Item(s) to Collection`}
-                      </Button>
+                        placeholder="Enter city name"
+                        fullWidth
+                        sx={{ 
+                          '& .MuiOutlinedInput-root': { height: '48px' },
+                          borderRadius: 2,
+                          backgroundColor: '#FFFFFF',
+                          '& fieldset': {
+                            borderColor: '#E2E8F0'
+                          },
+                          '&:hover fieldset': {
+                            borderColor: '#6818A5'
+                          },
+                          '&.Mui-focused fieldset': {
+                            borderColor: '#6818A5',
+                            borderWidth: 2
+                          },
+                          '& input::placeholder': {
+                            color: '#CBD5E1',
+                            fontWeight: 350,
+                            opacity: 1
+                          }
+                        }}
+                      />
                     </Box>
-                  )}
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="subtitle1" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>
+                        Country Code
+                      </Typography>
+                      <FormControl fullWidth>
+                        <Select
+                          value={(() => {
+                            // Extract country code from location if it exists
+                            const parts = editFormData.location.split(', ');
+                            return parts.length > 1 ? parts[parts.length - 1] : '';
+                          })()}
+                          onChange={(e) => {
+                            const countryCode = e.target.value;
+                            const city = editFormData.location.split(', ')[0] || editFormData.location;
+                            setEditFormData({ ...editFormData, location: `${city}, ${countryCode}` });
+                          }}
+                          displayEmpty
+                          sx={{
+                            height: '48px',
+                            borderRadius: 2,
+                            backgroundColor: '#FFFFFF',
+                            '& .MuiOutlinedInput-notchedOutline': {
+                              borderColor: '#E2E8F0'
+                            },
+                            '&:hover .MuiOutlinedInput-notchedOutline': {
+                              borderColor: '#6818A5'
+                            },
+                            '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                              borderColor: '#6818A5',
+                              borderWidth: 2
+                            }
+                          }}
+                        >
+                          <MenuItem value="" disabled>
+                            Select country
+                          </MenuItem>
+                          {countryCodes.map((code) => (
+                            <MenuItem 
+                              key={code} 
+                              value={code}
+                              sx={{
+                                '&:hover': {
+                                  backgroundColor: 'rgba(104, 24, 165, 0.08)',
+                                  color: '#6818A5'
+                                },
+                                '&.Mui-selected': {
+                                  backgroundColor: 'rgba(104, 24, 165, 0.12)',
+                                  color: '#6818A5',
+                                  '&:hover': {
+                                    backgroundColor: 'rgba(104, 24, 165, 0.16)'
+                                  }
+                                }
+                              }}
+                            >
+                              {code}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    </Box>
+                  </Box>
+
+                  {/* Dates */}
+                  <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="subtitle1" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>
+                        Check-in Date
+                      </Typography>
+                      <LocalizationProvider dateAdapter={AdapterDateFns}>
+                        <DatePicker
+                          value={editFormData.checkInDate}
+                          onChange={(newValue) => setEditFormData({ ...editFormData, checkInDate: newValue })}
+                          minDate={startOfToday()}
+                          format="MM/dd/yyyy"
+                          slotProps={{
+                            textField: { 
+                              fullWidth: true, 
+                              sx: { 
+                                '& .MuiOutlinedInput-root': { height: '48px' },
+                                borderRadius: 2,
+                                backgroundColor: '#FFFFFF',
+                                '& fieldset': {
+                                  borderColor: '#E2E8F0'
+                                },
+                                '&:hover fieldset': {
+                                  borderColor: '#6818A5'
+                                },
+                                '&.Mui-focused fieldset': {
+                                  borderColor: '#6818A5',
+                                  borderWidth: 2
+                                },
+                                '& input::placeholder': {
+                                  color: '#94A3B8',
+                                  fontWeight: 500,
+                                  opacity: 1
+                                }
+                              } 
+                            }
+                          }}
+                        />
+                      </LocalizationProvider>
+                    </Box>
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="subtitle1" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>
+                        Check-out Date
+                      </Typography>
+                      <LocalizationProvider dateAdapter={AdapterDateFns}>
+                        <DatePicker
+                          value={editFormData.checkOutDate}
+                          onChange={(newValue) => setEditFormData({ ...editFormData, checkOutDate: newValue })}
+                          minDate={editFormData.checkInDate || startOfToday()}
+                          format="MM/dd/yyyy"
+                          slotProps={{
+                            textField: { 
+                              fullWidth: true,
+                              sx: {
+                                '& .MuiOutlinedInput-root': { height: '48px' },
+                                borderRadius: 2,
+                                backgroundColor: '#FFFFFF',
+                                '& fieldset': {
+                                  borderColor: '#E2E8F0'
+                                },
+                                '&:hover fieldset': {
+                                  borderColor: '#6818A5'
+                                },
+                                '&.Mui-focused fieldset': {
+                                  borderColor: '#6818A5',
+                                  borderWidth: 2
+                                },
+                                '& input::placeholder': {
+                                  color: '#94A3B8',
+                                  fontWeight: 500,
+                                  opacity: 1
+                                }
+                              }
+                            }
+                          }}
+                        />
+                      </LocalizationProvider>
+                    </Box>
+                  </Box>
+
+                  {/* Adults and Star Rating */}
+                  <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="subtitle1" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>
+                        Number of Adults
+                      </Typography>
+                      <FormControl fullWidth>
+                        <Select
+                          value={editFormData.adults}
+                          onChange={(e) => setEditFormData({ ...editFormData, adults: Number(e.target.value) })}
+                          sx={{ 
+                            '& .MuiOutlinedInput-root': { height: '48px' },
+                            borderRadius: 2,
+                            backgroundColor: '#FFFFFF',
+                            '& .MuiOutlinedInput-notchedOutline': {
+                              borderColor: '#E2E8F0'
+                            },
+                            '&:hover .MuiOutlinedInput-notchedOutline': {
+                              borderColor: '#6818A5'
+                            },
+                            '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                              borderColor: '#6818A5',
+                              borderWidth: 2
+                            }
+                          }}
+                        >
+                          {[1, 2, 3, 4, 5, 6].map((num) => (
+                            <MenuItem 
+                              key={num} 
+                              value={num}
+                              sx={{
+                                '&:hover': {
+                                  backgroundColor: 'rgba(104, 24, 165, 0.08)',
+                                  color: '#6818A5'
+                                },
+                                '&.Mui-selected': {
+                                  backgroundColor: 'rgba(104, 24, 165, 0.12)',
+                                  color: '#6818A5',
+                                  '&:hover': {
+                                    backgroundColor: 'rgba(104, 24, 165, 0.16)'
+                                  }
+                                }
+                              }}
+                            >
+                              {num}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    </Box>
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="subtitle1" sx={{ mb: 1.5, fontWeight: 700, color: '#0F172A' }}>
+                        Star Rating
+                      </Typography>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                        <FormControl fullWidth>
+                          <Select
+                            value={editFormData.starRating}
+                            onChange={(e) => setEditFormData({ ...editFormData, starRating: Number(e.target.value) })}
+                            sx={{
+                              '& .MuiOutlinedInput-root': { height: '48px' },
+                              borderRadius: 2,
+                              backgroundColor: '#FFFFFF',
+                              '& .MuiOutlinedInput-notchedOutline': {
+                                borderColor: '#E2E8F0'
+                              },
+                              '&:hover .MuiOutlinedInput-notchedOutline': {
+                                borderColor: '#6818A5'
+                              },
+                              '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                                borderColor: '#6818A5',
+                                borderWidth: 2
+                              }
+                            }}
+                          >
+                            {[1, 2, 3, 4, 5].map((stars) => (
+                              <MenuItem 
+                                key={stars} 
+                                value={stars}
+                                sx={{
+                                  '&:hover': {
+                                    backgroundColor: 'rgba(104, 24, 165, 0.08)',
+                                    color: '#6818A5'
+                                  },
+                                  '&.Mui-selected': {
+                                    backgroundColor: 'rgba(104, 24, 165, 0.12)',
+                                    color: '#6818A5',
+                                    '&:hover': {
+                                      backgroundColor: 'rgba(104, 24, 165, 0.16)'
+                                    }
+                                  }
+                                }}
+                              >
+                                {stars}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={editFormData.starRatingOrMore}
+                              onChange={(e) => setEditFormData({ ...editFormData, starRatingOrMore: e.target.checked })}
+                              sx={{
+                                color: '#6818A5',
+                                '&.Mui-checked': {
+                                  color: '#6818A5'
+                                },
+                                '&:hover': {
+                                  backgroundColor: 'rgba(104, 24, 165, 0.04)'
+                                }
+                              }}
+                            />
+                          }
+                          label="or more"
+                          sx={{
+                            '& .MuiFormControlLabel-label': {
+                              fontWeight: 600,
+                              color: '#1E293B'
+                            }
+                          }}
+                        />
+                      </Box>
+                    </Box>
+                  </Box>
                 </Box>
-              )}
+                )}
+              </Box>
             </Box>
           )}
         </DialogContent>
         <DialogActions sx={{ p: 3, pt: 1 }}>
-          <Button 
-            onClick={handleCancelEdit}
-            variant="contained"
-            sx={{ 
-              backgroundColor: '#6818A5',
-              borderRadius: 2,
-              '&:hover': { backgroundColor: '#5a1594' },
-              fontFamily: '"Urbanist", sans-serif'
-            }}
-          >
-            Close
-          </Button>
+          {isEditingItemInDialog ? (
+            <>
+              <Button 
+                onClick={() => {
+                  setIsEditingItemInDialog(false);
+                  setEditingItem(null);
+                }}
+                sx={{
+                  borderRadius: 2,
+                  color: '#64748B',
+                  fontWeight: 600,
+                  textTransform: 'none',
+                  px: 3,
+                  py: 1,
+                  '&:hover': {
+                    backgroundColor: '#F1F5F9',
+                    color: '#475569'
+                  },
+                  fontFamily: '"Urbanist", sans-serif',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                Cancel
+              </Button>
+              <Button 
+                onClick={handleUpdateCollectionItem} 
+                variant="contained"
+                sx={{
+                  backgroundColor: '#6818A5',
+                  borderRadius: 2,
+                  fontWeight: 600,
+                  textTransform: 'none',
+                  px: 4,
+                  py: 1,
+                  boxShadow: '0 2px 8px rgba(104, 24, 165, 0.3)',
+                  '&:hover': { 
+                    backgroundColor: '#5a1594',
+                    boxShadow: '0 4px 12px rgba(104, 24, 165, 0.4)',
+                    transform: 'translateY(-1px)'
+                  },
+                  transition: 'all 0.2s ease-in-out',
+                  fontFamily: '"Urbanist", sans-serif'
+                }}
+              >
+                Save Changes
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button 
+                onClick={handleCancelEdit}
+                sx={{
+                  borderRadius: 2,
+                  color: '#64748B',
+                  fontWeight: 600,
+                  textTransform: 'none',
+                  px: 3,
+                  py: 1,
+                  '&:hover': {
+                    backgroundColor: '#F1F5F9',
+                    color: '#475569'
+                  },
+                  fontFamily: '"Urbanist", sans-serif',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                Cancel
+              </Button>
+              <Button 
+                onClick={handleSaveCollection}
+                variant="contained"
+                disabled={!hasUnsavedChanges}
+                sx={{ 
+                  backgroundColor: '#6818A5',
+                  borderRadius: 2,
+                  fontWeight: 600,
+                  textTransform: 'none',
+                  px: 4,
+                  py: 1,
+                  boxShadow: '0 2px 8px rgba(104, 24, 165, 0.3)',
+                  '&:hover': { 
+                    backgroundColor: '#5a1594',
+                    boxShadow: '0 4px 12px rgba(104, 24, 165, 0.4)',
+                    transform: 'translateY(-1px)'
+                  },
+                  '&:disabled': {
+                    backgroundColor: '#94A3B8',
+                    boxShadow: 'none'
+                  },
+                  transition: 'all 0.2s ease-in-out',
+                  fontFamily: '"Urbanist", sans-serif'
+                }}
+              >
+                Save Changes
+              </Button>
+            </>
+          )}
         </DialogActions>
       </Dialog>
 
-      {/* Edit Collection Item Dialog */}
+      {/* Edit Collection Item Dialog - Keep for standalone use */}
       <Dialog
-        open={showEditItemDialog}
+        open={showEditItemDialog && !showEditDialog}
         onClose={() => setShowEditItemDialog(false)}
         maxWidth="md"
         fullWidth
@@ -2572,7 +3513,7 @@ const MyCollections: React.FC = () => {
                         value={editFormData.selectedWebsites.length > 0 ? editFormData.selectedWebsites[0].code : ''}
                         onChange={(e) => {
                           const siteCode = e.target.value;
-                          const website = sites.find(w => w.code === siteCode);
+                          const website = sites.find((w: { code: string; name: string }) => w.code === siteCode);
                           if (website) {
                             setEditFormData({
                               ...editFormData,
@@ -2580,7 +3521,7 @@ const MyCollections: React.FC = () => {
                               posMapping: { [website.code]: editFormData.posMapping[website.code] || [] }
                             });
                             // Fetch POS options for the selected website
-                            axios.get('http://localhost:5001/pos', { params: { site_name: website.name } })
+                            axios.get(`${API_BASE_URL}/pos`, { params: { site_name: website.name } })
                               .then(res => setEditItemPosOptions(res.data.pos || []))
                               .catch(() => setEditItemPosOptions([]));
                           } else {
@@ -2613,7 +3554,7 @@ const MyCollections: React.FC = () => {
                         <MenuItem value="" disabled>
                           {sites.length === 0 ? 'No sites available' : 'Select a website'}
                         </MenuItem>
-                        {sites.map((website) => (
+                        {sites.map((website: { code: string; name: string }) => (
                           <MenuItem 
                             key={website.code} 
                             value={website.code}
@@ -2674,7 +3615,7 @@ const MyCollections: React.FC = () => {
                         }}
                         renderValue={(selected) => (
                           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                            {(selected as string[]).map((pos) => (
+                            {(selected as string[]).map((pos: string) => (
                               <Chip 
                                 key={pos} 
                                 label={pos} 
@@ -2695,7 +3636,7 @@ const MyCollections: React.FC = () => {
                         <MenuItem value="" disabled>
                           {editFormData.selectedWebsites.length === 0 ? 'Select website first' : (editItemPosOptions.length === 0 ? 'No POS available' : 'Select POS')}
                         </MenuItem>
-                        {editItemPosOptions.map((pos) => (
+                        {editItemPosOptions.map((pos: string) => (
                           <MenuItem 
                             key={pos} 
                             value={pos}
@@ -2734,13 +3675,21 @@ const MyCollections: React.FC = () => {
                         return parts[0] || editFormData.location;
                       })()}
                       onChange={(e) => {
-                        const city = e.target.value;
-                        const countryCode = editFormData.location.split(', ').length > 1 
-                          ? editFormData.location.split(', ')[editFormData.location.split(', ').length - 1]
-                          : '';
-                            setEditFormData({
-                              ...editFormData,
-                          location: countryCode ? `${city}, ${countryCode}` : city 
+                        const city = e.target.value.trim();
+                        // Extract existing country code from location if it exists and is valid
+                        const parts = editFormData.location.split(', ');
+                        let existingCountryCode = '';
+                        if (parts.length > 1) {
+                          const code = parts[parts.length - 1].trim();
+                          // Only preserve if it looks like a valid country code (2-3 uppercase letters)
+                          if (code.length >= 2 && code.length <= 3 && /^[A-Z]{2,3}$/.test(code)) {
+                            existingCountryCode = code;
+                          }
+                        }
+                        // Update location: only append country code if it was a valid code
+                        setEditFormData({
+                          ...editFormData,
+                          location: existingCountryCode && city ? `${city}, ${existingCountryCode}` : city
                         });
                         if (city) fetchSites();
                       }}
@@ -2804,7 +3753,7 @@ const MyCollections: React.FC = () => {
                         <MenuItem value="" disabled>
                           Select country
                         </MenuItem>
-                        {countryCodes.map((code) => (
+                        {countryCodes.map((code: string) => (
                           <MenuItem 
                             key={code} 
                             value={code}
@@ -2841,6 +3790,7 @@ const MyCollections: React.FC = () => {
                         value={editFormData.checkInDate}
                         onChange={(newValue) => setEditFormData({ ...editFormData, checkInDate: newValue })}
                         minDate={startOfToday()}
+                        format="MM/dd/yyyy"
                         slotProps={{
                           textField: { 
                             fullWidth: true, 
@@ -2878,6 +3828,7 @@ const MyCollections: React.FC = () => {
                         value={editFormData.checkOutDate}
                         onChange={(newValue) => setEditFormData({ ...editFormData, checkOutDate: newValue })}
                         minDate={editFormData.checkInDate || startOfToday()}
+                        format="MM/dd/yyyy"
                         slotProps={{
                           textField: { 
                             fullWidth: true,

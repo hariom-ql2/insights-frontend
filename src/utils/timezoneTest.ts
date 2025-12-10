@@ -33,7 +33,7 @@ export const testTimezoneConversion = () => {
     const utcIsoString = timezoneService.formatForAPI(testDate);
     
     // Test conversion from UTC back to user timezone
-    const userTime = timezoneService.convertFromUTC(utcTime);
+    timezoneService.convertFromUTC(utcTime);
     const userFormatted = timezoneService.formatForUser(utcTime, 'datetime');
     
     console.log(`   User Time: ${userFormatted}`);

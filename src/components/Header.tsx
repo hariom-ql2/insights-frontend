@@ -1,13 +1,18 @@
-import { AppBar, Toolbar, Box, Button, IconButton, Menu, MenuItem, useTheme, useMediaQuery, Typography, TextField } from '@mui/material';
+import { AppBar, Toolbar, Box, Button, IconButton, Menu, MenuItem, useTheme, useMediaQuery, Typography, TextField, Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import MenuIcon from '@mui/icons-material/Menu';
-import { useState } from 'react';
+import React, { useState } from 'react';
 import PersonIcon from '@mui/icons-material/Person';
-import { Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import { useAuth } from '../contexts/AuthContext';
 
-const NavButton = ({ children, ...props }: any) => (
+interface NavButtonProps {
+  children: React.ReactNode;
+  onClick?: () => void;
+  sx?: object;
+}
+
+const NavButton = ({ children, ...props }: NavButtonProps) => (
   <Button
     {...props}
     sx={{
@@ -24,7 +29,13 @@ const NavButton = ({ children, ...props }: any) => (
   </Button>
 );
 
-const SignupButton = ({ children, ...props }: any) => (
+interface SignupButtonProps {
+  children: React.ReactNode;
+  onClick?: () => void;
+  sx?: object;
+}
+
+const SignupButton = ({ children, ...props }: SignupButtonProps) => (
   <Button
     variant="contained"
     {...props}
@@ -106,7 +117,8 @@ const Header = () => {
     setCaptchaError('');
     try {
       const formatParam = downloadFormat === 'json' ? '?format=json' : '?format=csv';
-      const res = await fetch(`http://localhost:5001/download-sample-data${formatParam}`);
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+      const res = await fetch(`${API_BASE_URL}/download-sample-data${formatParam}`);
       if (!res.ok) throw new Error('Failed to download sample data');
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
@@ -258,7 +270,7 @@ const Header = () => {
         <DialogContent>
           <Typography sx={{ mb: 2 }}>Please enter the following text to continue:</Typography>
           <Box sx={{ fontWeight: 700, fontSize: '1.5rem', letterSpacing: '0.2em', background: '#F1F5F9', p: 2, mb: 2, textAlign: 'center', borderRadius: 1, userSelect: 'none' }}>{captchaText}</Box>
-          <TextField autoFocus fullWidth label="Enter captcha text" value={captchaInput} onChange={e => setCaptchaInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleCaptchaSubmit(); }} error={!!captchaError} helperText={captchaError} />
+          <TextField autoFocus fullWidth label="Enter captcha text" value={captchaInput} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCaptchaInput(e.target.value)} onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') handleCaptchaSubmit(); }} error={!!captchaError} helperText={captchaError} />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setCaptchaOpen(false)}>Cancel</Button>

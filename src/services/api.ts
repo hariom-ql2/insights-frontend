@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
 export interface ApiResponse<T = any> {
   success: boolean;
@@ -208,6 +208,9 @@ export const reportsApi = {
   },
   getPriceSuggestion: async (token: string | null): Promise<{ success: boolean; token?: string; url?: string; message?: string }> => {
     return apiService.get('/reports/price-suggestion', token);
+  },
+  getReviewAnalysis: async (token: string | null): Promise<{ success: boolean; token?: string; url?: string; message?: string }> => {
+    return apiService.get('/reports/review-analysis', token);
   },
 };
 

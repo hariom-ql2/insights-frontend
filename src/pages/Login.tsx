@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
-import { Typography, Box, TextField, Button, Link, Alert, Stepper, Step, StepLabel, StepConnector } from '@mui/material';
+import { Typography, Box, TextField, Button, Link, Alert, Stepper, Step, StepLabel, StepConnector, InputAdornment, IconButton } from '@mui/material';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { styled } from '@mui/material/styles';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import PersonIcon from '@mui/icons-material/Person';
 import PaymentIcon from '@mui/icons-material/Payment';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
 
 const CustomStepConnector = styled(StepConnector)(() => ({
   '&.Mui-active .MuiStepConnector-line': {
@@ -42,6 +44,7 @@ const Login: React.FC = () => {
     password: '',
   });
   const [error, setError] = useState<string>('');
+  const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
   const { login, isAuthenticated, isAdmin } = useAuth();
 
@@ -302,7 +305,7 @@ const Login: React.FC = () => {
               </Typography>
               <TextField
                 fullWidth
-                type="password"
+                type={showPassword ? 'text' : 'password'}
                 placeholder="Enter your password"
                 value={formData.password}
                 onChange={(e) => setFormData({ ...formData, password: e.target.value })}
@@ -311,6 +314,32 @@ const Login: React.FC = () => {
                     e.preventDefault();
                     handleSubmit(e as any);
                   }
+                }}
+                InputProps={{
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        aria-label="toggle password visibility"
+                        onClick={() => setShowPassword(!showPassword)}
+                        edge="end"
+                        sx={{ 
+                          color: '#64748B',
+                          '&:focus': {
+                            outline: 'none',
+                          },
+                          '&:focus-visible': {
+                            outline: 'none',
+                          },
+                          '&:focus-visible::after': {
+                            display: 'none',
+                          }
+                        }}
+                        disableFocusRipple
+                      >
+                        {showPassword ? <VisibilityOff /> : <Visibility />}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
                 }}
                 sx={{ 
                   '& .MuiOutlinedInput-root': {

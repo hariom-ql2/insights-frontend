@@ -1,18 +1,12 @@
 
-import { Box, Typography, Container, Grid, Card, CardContent, Chip, Button } from '@mui/material';
+import { Box, Typography, Container, Card, CardContent, Chip, Button } from '@mui/material';
 import { 
   Search, 
   Analytics, 
   Download, 
   Business, 
   Api, 
-  Schedule,
-  TrendingUp,
-  Security,
-  Speed,
-  Support,
-  CheckCircle,
-  Star
+  Schedule
 } from '@mui/icons-material';
 
 const Services = () => {
@@ -55,35 +49,6 @@ const Services = () => {
     }
   ];
 
-  const additionalFeatures = [
-    { icon: <Security />, text: 'Enterprise-grade security' },
-    { icon: <Speed />, text: 'Lightning-fast performance' },
-    { icon: <Support />, text: '24/7 customer support' },
-    { icon: <TrendingUp />, text: 'Continuous platform updates' },
-    { icon: <CheckCircle />, text: '99.9% uptime guarantee' },
-    { icon: <Star />, text: 'Premium data quality' }
-  ];
-
-  const pricingTiers = [
-    {
-      name: 'Basic',
-      price: '$299/mo',
-      description: 'Perfect for individual travelers and small teams',
-      features: ['Hotel Search & Comparison', 'Basic Analytics', 'Standard Support', 'CSV Exports']
-    },
-    {
-      name: 'Pro',
-      price: '$399/mo',
-      description: 'Ideal for growing businesses and travel agencies',
-      features: ['Everything in Basic', 'Advanced Analytics', 'Priority Support', 'API Access', 'Custom Reports']
-    },
-    {
-      name: 'Enterprise',
-      price: '$499/mo',
-      description: 'Complete solution for large organizations',
-      features: ['Everything in Pro', 'White-label Solutions', 'Dedicated Support', 'Custom Integrations', 'SLA Guarantee']
-    }
-  ];
 
   return (
     <Box sx={{ backgroundColor: '#F6F9FF', minHeight: '100vh' }}>
@@ -136,9 +101,9 @@ const Services = () => {
           </Typography>
 
           {/* TODO: make them centre, justified and same width of the boxes*/}
-          <Grid container spacing={4} sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', textAlign: 'center', margin: '0 auto', width: '80%' }}>
+          <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, flexWrap: 'wrap', gap: 4, justifyContent: 'center', alignItems: 'center', textAlign: 'center', margin: '0 auto', width: '80%' }}>
             {coreServices.map((service, index) => (
-              <Grid item xs={12} md={6} key={index} sx={{ width: '100%' }}>
+              <Box key={index} sx={{ width: { xs: '100%', md: 'calc(50% - 16px)' } }}>
                 <Card sx={{ width: '100%', height: '100%' }}>
                   <CardContent sx={{ p: 4 }}>
                     <Box sx={{ mb: 3 }}>
@@ -182,9 +147,9 @@ const Services = () => {
                     </Box>
                   </CardContent>
                 </Card>
-              </Grid>
+              </Box>
             ))}
-          </Grid>
+          </Box>
         </Box>
 
         {/* CTA Section */}

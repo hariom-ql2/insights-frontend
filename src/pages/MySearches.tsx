@@ -49,7 +49,6 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { apiService } from '../services/api';
 import TimeDisplay from '../components/TimeDisplay';
-import noResultsImage from '../../icons/no-results.png';
 import viewIcon from '../../icons/view.svg';
 import starIcon from '../../icons/star.svg';
 import axios from 'axios';
@@ -164,7 +163,8 @@ const MySearches: React.FC = () => {
 
   const fetchSites = async () => {
     try {
-      const response = await axios.get('http://localhost:5001/sites');
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+      const response = await axios.get(`${API_BASE_URL}/sites`);
       const allSites = response.data.sites || [];
       const sitesFormatted = allSites.map((siteName: string) => ({
         code: siteName,
@@ -395,7 +395,8 @@ const MySearches: React.FC = () => {
     
     try {
       const formatParam = format === 'json' ? '?format=json' : '?format=csv';
-      const response = await fetch(`http://localhost:5001/download-by-run-id/${search.run_id}${formatParam}`, {
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+      const response = await fetch(`${API_BASE_URL}/download-by-run-id/${search.run_id}${formatParam}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },

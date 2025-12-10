@@ -66,6 +66,9 @@ const MultiSearchForm = () => {
   const [submitting, setSubmitting] = useState(false);
   const [collectionName, setCollectionName] = useState<string>('');
 
+  // API base URL - defined at component level for all functions to use
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+
   // Dynamic state for sites and POS
   const [sites, setSites] = useState<string[]>([]);
   const [posOptions, setPosOptions] = useState<string[]>([]);
@@ -112,7 +115,7 @@ const MultiSearchForm = () => {
 
   // Fetch sites on mount
   useEffect(() => {
-    axios.get('http://localhost:5001/sites')
+    axios.get(`${API_BASE_URL}/sites`)
       .then(res => setSites(res.data.sites || []))
       .catch(() => setSites([]));
   }, []);
@@ -120,7 +123,7 @@ const MultiSearchForm = () => {
   // Fetch POS when selectedWebsite changes
   useEffect(() => {
     if (selectedWebsite) {
-      axios.get('http://localhost:5001/pos', { params: { site_name: selectedWebsite.name } })
+      axios.get(`${API_BASE_URL}/pos`, { params: { site_name: selectedWebsite.name } })
         .then(res => setPosOptions(res.data.pos || []))
         .catch(() => setPosOptions([]));
     } else {
@@ -132,7 +135,7 @@ const MultiSearchForm = () => {
     const siteName = event.target.value;
     if (siteName) {
       try {
-        const res = await axios.get('http://localhost:5001/pos', { params: { site_name: siteName } });
+        const res = await axios.get(`${API_BASE_URL}/pos`, { params: { site_name: siteName } });
         const posList = res.data.pos || [];
         setPosOptions(posList);
         setSelectedWebsite({ name: siteName });
@@ -294,7 +297,7 @@ const MultiSearchForm = () => {
         action: 'save',
         collection_name: collectionName.trim()
       };
-      const collectionRes = await axios.post('http://localhost:5001/save-multi-form', scheduleCollectionPayload, {
+      const collectionRes = await axios.post(`${API_BASE_URL}/save-multi-form`, scheduleCollectionPayload, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -314,7 +317,7 @@ const MultiSearchForm = () => {
           collection_id: collection.collection_id
         };
 
-        const scheduleRes = await axios.post('http://localhost:5001/schedules', schedulePayload, {
+        const scheduleRes = await axios.post(`${API_BASE_URL}/schedules`, schedulePayload, {
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json'
@@ -372,35 +375,49 @@ const MultiSearchForm = () => {
             const adultsStr = columns[6];
             const posValue = columns.length > 7 ? columns[7] : '';
             
-            // Parse dates from YYYYMMDD format
+            // Parse dates - support both days offset (≤3 chars) and YYYYMMDD format
             let checkInDate: Date | null = null;
             let checkOutDate: Date | null = null;
             
-            if (checkInStr && checkInStr.length === 8) {
-              const year = parseInt(checkInStr.substring(0, 4));
-              const month = parseInt(checkInStr.substring(4, 6)) - 1; // JS months are 0-indexed
-              const day = parseInt(checkInStr.substring(6, 8));
-              if (!isNaN(year) && !isNaN(month) && !isNaN(day)) {
-                checkInDate = new Date(year, month, day);
-                // Validate date
-                if (checkInDate.getFullYear() !== year || checkInDate.getMonth() !== month || checkInDate.getDate() !== day) {
-                  checkInDate = null;
+            // Helper function to parse date from either format
+            const parseDateFromCSV = (dateStr: string): Date | null => {
+              if (!dateStr) return null;
+              
+              // Days offset format: string length ≤ 3
+              if (dateStr.length <= 3) {
+                const daysOffset = parseInt(dateStr, 10);
+                // Validate: must be a valid number between 0-999
+                if (!isNaN(daysOffset) && daysOffset >= 0 && daysOffset <= 999) {
+                  const today = new Date();
+                  today.setHours(0, 0, 0, 0); // Reset time to midnight
+                  const resultDate = new Date(today);
+                  resultDate.setDate(today.getDate() + daysOffset);
+                  return resultDate;
+                }
+                return null; // Invalid days offset
+              }
+              
+              // YYYYMMDD format: string length === 8
+              if (dateStr.length === 8) {
+                const year = parseInt(dateStr.substring(0, 4));
+                const month = parseInt(dateStr.substring(4, 6)) - 1; // JS months are 0-indexed
+                const day = parseInt(dateStr.substring(6, 8));
+                if (!isNaN(year) && !isNaN(month) && !isNaN(day)) {
+                  const resultDate = new Date(year, month, day);
+                  // Validate date
+                  if (resultDate.getFullYear() === year && 
+                      resultDate.getMonth() === month && 
+                      resultDate.getDate() === day) {
+                    return resultDate;
+                  }
                 }
               }
-            }
+              
+              return null; // Invalid format
+            };
             
-            if (checkOutStr && checkOutStr.length === 8) {
-              const year = parseInt(checkOutStr.substring(0, 4));
-              const month = parseInt(checkOutStr.substring(4, 6)) - 1;
-              const day = parseInt(checkOutStr.substring(6, 8));
-              if (!isNaN(year) && !isNaN(month) && !isNaN(day)) {
-                checkOutDate = new Date(year, month, day);
-                // Validate date
-                if (checkOutDate.getFullYear() !== year || checkOutDate.getMonth() !== month || checkOutDate.getDate() !== day) {
-                  checkOutDate = null;
-                }
-              }
-            }
+            checkInDate = parseDateFromCSV(checkInStr);
+            checkOutDate = parseDateFromCSV(checkOutStr);
             
             // Parse star rating (handle "4+" format)
             let starRating = parseInt(starRatingStr) || 1;
@@ -536,7 +553,7 @@ const MultiSearchForm = () => {
         action,
         collection_name: collectionName.trim()
       };
-      const res = await axios.post('http://localhost:5001/save-multi-form', payload, {
+      const res = await axios.post(`${API_BASE_URL}/save-multi-form`, payload, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',

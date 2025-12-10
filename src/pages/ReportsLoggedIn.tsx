@@ -15,6 +15,7 @@ import {
   Close as CloseIcon,
   TrendingUp,
   Assessment,
+  RateReview,
 } from '@mui/icons-material';
 import {
   ResponsiveContainer,
@@ -26,6 +27,8 @@ import {
   Line,
   LineChart,
   LabelList,
+  ScatterChart,
+  Scatter,
 } from 'recharts';
 import { reportsApi } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -41,7 +44,7 @@ interface ReportItem {
     value: string;
   }[];
   chartData?: any[];
-  chartType?: 'line' | 'bar' | 'pie' | 'area' | 'composed';
+  chartType?: 'line' | 'bar' | 'pie' | 'area' | 'composed' | 'scatter';
   category?: string;
   imagePath?: string;
 }
@@ -55,7 +58,7 @@ interface ReportCategory {
 }
 
 // Dashboard report IDs that use Tableau
-const TABLEAU_REPORT_IDS = ['1', '2', '3', '4'];
+const TABLEAU_REPORT_IDS = ['1', '2', '3', '4', '5'];
 
 const ReportsLoggedIn: React.FC = () => {
   const { token } = useAuth();
@@ -154,6 +157,45 @@ const ReportsLoggedIn: React.FC = () => {
         chartType: 'composed',
       },
     },
+    {
+      icon: <RateReview sx={{ fontSize: 36, color: '#FFFFFF' }} />,
+      iconBg: '#6818A5',
+      title: 'Review Analysis',
+      description: 'Comprehensive analysis of customer reviews and ratings to understand guest satisfaction and feedback patterns.',
+      report: {
+        id: '5',
+        title: 'Review Analysis',
+        date: '2025-11-15',
+        status: 'completed',
+        description: 'Detailed analysis of customer reviews, ratings, and sentiment to gain insights into guest experiences and satisfaction levels.',
+        metrics: [],
+        chartData: [
+          { x: 25, y: 20, value: 1091, name: 'Location A' },
+          { x: 35, y: 22, value: 216, name: 'Location B' },
+          { x: 38, y: 18, value: 1, name: 'Location C' },
+          { x: 15, y: 25, value: 693, name: 'Location D' },
+          { x: 28, y: 30, value: 1005, name: 'Location E' },
+          { x: 70, y: 25, value: 391, name: 'Location F' },
+          { x: 45, y: 50, value: 373, name: 'Location G' },
+          { x: 47, y: 52, value: 2, name: 'Location H' },
+          { x: 60, y: 50, value: 488, name: 'Location I' },
+          { x: 75, y: 48, value: 1007, name: 'Location J' },
+          { x: 78, y: 50, value: 512, name: 'Location K' },
+          { x: 20, y: 70, value: 145, name: 'Location L' },
+          { x: 18, y: 85, value: 1, name: 'Location M' },
+          { x: 30, y: 75, value: 698, name: 'Location N' },
+          { x: 25, y: 72, value: 6, name: 'Location O' },
+          { x: 27, y: 78, value: 225, name: 'Location P' },
+          { x: 40, y: 78, value: 342, name: 'Location Q' },
+          { x: 50, y: 80, value: 626, name: 'Location R' },
+          { x: 55, y: 75, value: 228, name: 'Location S' },
+          { x: 58, y: 82, value: 177, name: 'Location T' },
+          { x: 50, y: 95, value: 1, name: 'Location U' },
+          { x: 50, y: 75, value: 0, name: 'Star', isStar: true },
+        ],
+        chartType: 'scatter',
+      },
+    },
   ];
 
   // Map report IDs to API functions
@@ -162,6 +204,7 @@ const ReportsLoggedIn: React.FC = () => {
     '2': reportsApi.getMarketView,
     '3': reportsApi.getStarRatingTrend,
     '4': reportsApi.getPriceSuggestion,
+    '5': reportsApi.getReviewAnalysis,
   }), []);
 
   const fetchDashboardData = useCallback(async (reportId: string) => {
@@ -485,6 +528,116 @@ const ReportsLoggedIn: React.FC = () => {
             <Line type="monotone" dataKey="myHotel" stroke="#3B82F6" strokeWidth={2} dot={{ r: 3 }} />
             <Line type="monotone" dataKey="marketAvg" stroke="#10B981" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} />
           </LineChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Review Analysis - Map-style Scatter Chart
+    if (report.id === '5') {
+      const getCircleSize = (value: number) => {
+        if (value === 0) return isPreview ? 10 : 14; // Star marker
+        if (value >= 1000) return isPreview ? 18 : 24;
+        if (value >= 500) return isPreview ? 14 : 20;
+        if (value >= 200) return isPreview ? 12 : 18;
+        if (value >= 100) return isPreview ? 10 : 16;
+        if (value >= 10) return isPreview ? 8 : 14;
+        return isPreview ? 6 : 12;
+      };
+
+      const getCircleColor = (value: number, isStar?: boolean) => {
+        if (isStar) return '#6818A5'; // Purple for star
+        if (value >= 500) return '#10B981'; // Dark green
+        if (value >= 200) return '#34D399'; // Medium green
+        return '#6EE7B7'; // Light green
+      };
+
+      // Custom shape for scatter points with varying sizes
+      const CustomShape = (props: any) => {
+        const { cx, cy, payload } = props;
+        const size = getCircleSize(payload.value);
+        const color = getCircleColor(payload.value, payload.isStar);
+        
+        if (payload.isStar) {
+          // Render star
+          return (
+            <g>
+              <text
+                x={cx}
+                y={cy}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fill={color}
+                fontSize={size * 1.5}
+                fontWeight="bold"
+              >
+                ★
+              </text>
+            </g>
+          );
+        }
+        
+        // Render circle with label
+        return (
+          <g>
+            <circle
+              cx={cx}
+              cy={cy}
+              r={size}
+              fill={color}
+              stroke="#FFFFFF"
+              strokeWidth={2}
+            />
+            <text
+              x={cx}
+              y={cy}
+              textAnchor="middle"
+              dominantBaseline="middle"
+              fill="#FFFFFF"
+              fontSize={isPreview ? 8 : 10}
+              fontFamily='"Urbanist", sans-serif'
+              fontWeight={700}
+              style={{ textShadow: '0 1px 2px rgba(0,0,0,0.3)' }}
+            >
+              {payload.value > 0 ? payload.value : ''}
+            </text>
+          </g>
+        );
+      };
+
+      return (
+        <ResponsiveContainer width="100%" height={chartHeight}>
+          <ScatterChart data={report.chartData} margin={margin}>
+            <XAxis 
+              type="number"
+              dataKey="x"
+              domain={[0, 100]}
+              hide
+            />
+            <YAxis 
+              type="number"
+              dataKey="y"
+              domain={[0, 100]}
+              hide
+            />
+            <Tooltip 
+              cursor={{ strokeDasharray: '3 3' }}
+              contentStyle={{
+                backgroundColor: '#FFFFFF',
+                border: '1px solid #E5E5E5',
+                borderRadius: 8,
+                fontFamily: '"Urbanist", sans-serif',
+              }}
+              formatter={(value: number, payload: any) => {
+                const entry = payload.payload || payload;
+                if (entry.isStar) return ['Star Location', 'Center Point'];
+                return [`${entry.name}: ${value} reviews`, ''];
+              }}
+            />
+            <Scatter 
+              dataKey="value" 
+              shape={CustomShape}
+            />
+          </ScatterChart>
         </ResponsiveContainer>
       );
     }

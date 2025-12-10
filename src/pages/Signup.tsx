@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Typography, Box, TextField, Button, Link, Stepper, Step, StepLabel, StepConnector, MenuItem, Select, FormControl } from '@mui/material';
+import { Typography, Box, TextField, Button, Link, Stepper, Step, StepLabel, StepConnector, MenuItem, Select, FormControl, InputAdornment, IconButton } from '@mui/material';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { styled } from '@mui/material/styles';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import PersonIcon from '@mui/icons-material/Person';
 import PaymentIcon from '@mui/icons-material/Payment';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
 
 const CustomStepConnector = styled(StepConnector)(() => ({
   '&.Mui-active .MuiStepConnector-line': {
@@ -51,6 +53,8 @@ const Signup: React.FC = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [detectedTimezone, setDetectedTimezone] = useState<string>('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   // Refs for all input fields in tab order
   const nameRef = useRef<HTMLInputElement>(null);
@@ -131,7 +135,8 @@ const Signup: React.FC = () => {
     }
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:5001/signup', {
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+      const res = await fetch(`${API_BASE_URL}/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -369,13 +374,39 @@ const Signup: React.FC = () => {
                 <TextField
                   inputRef={passwordRef}
                   fullWidth
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   placeholder="Enter your password"
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                   onKeyDown={(e) => {
                     handleTabKey(e, 2);
                     handleEnterKey(e);
+                  }}
+                  InputProps={{
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton
+                          aria-label="toggle password visibility"
+                          onClick={() => setShowPassword(!showPassword)}
+                          edge="end"
+                          sx={{ 
+                            color: '#64748B',
+                            '&:focus': {
+                              outline: 'none',
+                            },
+                            '&:focus-visible': {
+                              outline: 'none',
+                            },
+                            '&:focus-visible::after': {
+                              display: 'none',
+                            }
+                          }}
+                          disableFocusRipple
+                        >
+                          {showPassword ? <VisibilityOff /> : <Visibility />}
+                        </IconButton>
+                      </InputAdornment>
+                    ),
                   }}
                   sx={{ 
                     '& .MuiOutlinedInput-root': {
@@ -646,13 +677,39 @@ const Signup: React.FC = () => {
                 <TextField
                   inputRef={confirmPasswordRef}
                   fullWidth
-                  type="password"
+                  type={showConfirmPassword ? 'text' : 'password'}
                   placeholder="Confirm your password"
                   value={formData.confirmPassword}
                   onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
                   onKeyDown={(e) => {
                     handleTabKey(e, 3);
                     handleEnterKey(e);
+                  }}
+                  InputProps={{
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton
+                          aria-label="toggle confirm password visibility"
+                          onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                          edge="end"
+                          sx={{ 
+                            color: '#64748B',
+                            '&:focus': {
+                              outline: 'none',
+                            },
+                            '&:focus-visible': {
+                              outline: 'none',
+                            },
+                            '&:focus-visible::after': {
+                              display: 'none',
+                            }
+                          }}
+                          disableFocusRipple
+                        >
+                          {showConfirmPassword ? <VisibilityOff /> : <Visibility />}
+                        </IconButton>
+                      </InputAdornment>
+                    ),
                   }}
                   sx={{ 
                     '& .MuiOutlinedInput-root': {

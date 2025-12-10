@@ -7,12 +7,13 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/locations': 'http://localhost:5001',
-      '/sites': 'http://localhost:5001',
-      '/pos': 'http://localhost:5001',
-      '/contact-query': 'http://localhost:5001',
-      '/create-payment-order': 'http://localhost:5001'
-      // add other endpoints as needed
+      // Proxy all API endpoints to backend during development
+      // Note: This is only for dev server. Production uses nginx proxy.
+      '/api': {
+        target: 'http://localhost:5001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, '')
+      },
     }
   }
 })

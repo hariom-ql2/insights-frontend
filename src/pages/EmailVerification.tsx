@@ -32,7 +32,8 @@ const EmailVerification: React.FC = () => {
     setMessage(null);
 
     try {
-      const res = await fetch('http://localhost:5001/verify-email', {
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+      const res = await fetch(`${API_BASE_URL}/verify-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -54,6 +55,7 @@ const EmailVerification: React.FC = () => {
             is_verified: true,
             role: data.user.role || 'user',
             timezone: data.user.timezone,
+            created_at: data.user.created_at || new Date().toISOString(),
           });
           
           setMessage({ type: 'success', text: data.message || 'Email verified successfully! Logging you in...' });
@@ -93,7 +95,8 @@ const EmailVerification: React.FC = () => {
     setMessage(null);
 
     try {
-      const res = await fetch('http://localhost:5001/resend-verification', {
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+      const res = await fetch(`${API_BASE_URL}/resend-verification`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email })

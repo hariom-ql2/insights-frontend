@@ -44,7 +44,8 @@ const Contact = () => {
     
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:5001/contact-query', {
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+      const res = await fetch(`${API_BASE_URL}/contact-query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form)
